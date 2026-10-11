@@ -25,7 +25,7 @@
 ### 1.3 Recommended Baseline Target Configuration
 | Configuration Item | Recommended Value | Rationale |
 |---|---|---|
-| **Package Name** | `com.pranjalbudaniya.teradown` | Clean, reverse-DNS identifier for application ID and namespaces |
+| **Package Name** | `com.tera.down` | Clean, reverse-DNS identifier for application ID and namespaces |
 | **Compile SDK** | `35` (Android 15) | Matches installed SDK platform and modern Jetpack libraries |
 | **Target SDK** | `35` (Android 15) | Modern behavior, predictive back, Android 15 edge-to-edge enforcement |
 | **Min SDK** | `26` (Android 8.0) | Covers >98% of active devices; native `java.time`, notification channels, modern storage |

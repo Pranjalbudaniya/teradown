@@ -3,14 +3,15 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 android {
-    namespace = "com.pranjalbudaniya.teradown"
+    namespace = "com.tera.down"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.pranjalbudaniya.teradown"
+        applicationId = "com.tera.down"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -48,9 +49,27 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.datastore.preferences)
+
+    // Room Database
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // Networking
+    implementation(libs.okhttp)
+
+    // Media3 / ExoPlayer
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
+    implementation(libs.media3.common)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.room.testing)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.robolectric)
 }
