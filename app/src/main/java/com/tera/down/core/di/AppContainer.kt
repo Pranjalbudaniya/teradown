@@ -164,13 +164,14 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     override val authCoordinator: AuthCoordinator by lazy {
-        AuthCoordinatorImpl()
+        AuthCoordinatorImpl(maxAttempts = Int.MAX_VALUE)
     }
 
     override val teraboxShareLinkResolver: TeraboxShareLinkResolver by lazy {
         TeraboxShareLinkResolver(
             sessionRepository = sessionRepository,
-            authCoordinator = authCoordinator
+            authCoordinator = authCoordinator,
+            maxAuthAttempts = 100
         )
     }
 

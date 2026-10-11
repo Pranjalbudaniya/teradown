@@ -148,12 +148,17 @@ class DefaultSessionRepository(
         val session = _sessionFlow.value ?: return null
         if (session.isExpired) return null
 
-        // Domain matching: host must match or end with stored domain (e.g. .terabox.com)
-        val normalizedReq = domain.lowercase()
-        val normalizedSession = session.domain.lowercase()
+        // Domain matching: host must match, end with stored domain, or both be recognized Terabox family hosts
+        val normalizedReq = domain.lowercase().trimStart('.')
+        val normalizedSession = session.domain.lowercase().trimStart('.')
         if (normalizedReq == normalizedSession ||
             normalizedReq.endsWith(".$normalizedSession") ||
-            normalizedSession.endsWith(".$normalizedReq")
+            normalizedSession.endsWith(".$normalizedReq") ||
+            (com.tera.down.feature.resolver.TeraboxShareLinkParser.isRecognizedHost(normalizedReq) &&
+             (com.tera.down.feature.resolver.TeraboxShareLinkParser.isRecognizedHost(normalizedSession) ||
+              normalizedSession.contains("terabox") ||
+              normalizedSession.contains("1024tera") ||
+              normalizedSession.contains("dubox")))
         ) {
             return session.cookieString.ifBlank { null }
         }

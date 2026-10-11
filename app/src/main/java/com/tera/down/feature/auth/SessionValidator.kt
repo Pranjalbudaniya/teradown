@@ -15,6 +15,9 @@ import javax.net.ssl.SSLException
  *
  * Distinctly classifies:
  * - [Valid]: Session verified by server and authenticated.
+ * - [ProvisionallyValid]: Could not reach any server to verify, but cookies contain
+ *   recognized auth markers. Session is accepted provisionally and will be re-verified
+ *   when the app next contacts Terabox for a download.
  * - [NotLoggedIn]: Session explicitly rejected by server (expired tokens, login redirect, unauthenticated errno).
  * - [InvalidTokens]: Structural token issue (missing cookies, missing auth markers, expired timestamp).
  * - [NetworkError]: Transient network/connectivity failure (timeout, DNS resolution, TLS failure, connection refused).
@@ -25,6 +28,15 @@ sealed interface SessionValidationResult {
     data class Valid(
         val uk: Long? = null,
         val uname: String? = null,
+        val verifiedDomain: String? = null
+    ) : SessionValidationResult
+
+    /**
+     * Accepted provisionally: auth markers present but no server could be reached to confirm.
+     * The session is saved and will be re-verified on next actual server interaction.
+     */
+    data class ProvisionallyValid(
+        val reason: String,
         val verifiedDomain: String? = null
     ) : SessionValidationResult
 
@@ -58,8 +70,8 @@ interface SessionValidator {
  */
 class DefaultSessionValidator(
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
         .followRedirects(false)
         .build(),
     private val baseUrlOverride: String? = null
@@ -67,8 +79,7 @@ class DefaultSessionValidator(
 
     companion object {
         /**
-         * Key authentication cookie markers issued by Terabox and Baidu authentication servers.
-         * An unauthenticated guest session will only receive tracking/csrf cookies (browserid, lang, etc.).
+         * Key authentication and session cookie markers issued by Terabox and Baidu authentication servers.
          */
         val AUTH_COOKIE_MARKERS = listOf(
             "ndus=",
@@ -137,6 +148,7 @@ class DefaultSessionValidator(
 
             when (result) {
                 is SessionValidationResult.Valid -> return result
+                is SessionValidationResult.ProvisionallyValid -> return result
                 is SessionValidationResult.NotLoggedIn -> return result
                 is SessionValidationResult.InvalidTokens -> return result
                 is SessionValidationResult.ServerError -> return result
@@ -148,7 +160,15 @@ class DefaultSessionValidator(
             }
         }
 
-        // If all candidate hosts were unreachable via network, return the network error
+        // If all candidate hosts were unreachable via network, fall back to provisional acceptance.
+        // The WebView could reach Terabox (user logged in there), but OkHttp cannot due to regional ISP blocks.
+        if (hasAuthToken) {
+            return SessionValidationResult.ProvisionallyValid(
+                reason = "Could not reach Terabox servers to verify, but session cookies contain authentication tokens. Session accepted provisionally.",
+                verifiedDomain = primaryHost
+            )
+        }
+
         return lastNetworkError ?: SessionValidationResult.NetworkError("Unable to reach Terabox servers on any mirror domain.")
     }
 

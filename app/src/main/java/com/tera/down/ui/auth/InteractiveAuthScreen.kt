@@ -199,12 +199,12 @@ fun InteractiveAuthScreen(
                                 "https://terabox.com"
                             ).distinct()
 
-                            val foundCookies = candidateUrls.mapNotNull { url ->
-                                cookieManager.getCookie(url)?.takeIf { it.isNotBlank() }
+                            val allCookiePairs = candidateUrls.flatMap { url ->
+                                cookieManager.getCookie(url)?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+                            }.distinctBy { it.substringBefore("=").trim().lowercase() }
+                            val cookies = allCookiePairs.joinToString("; ").ifBlank {
+                                cookieManager.getCookie(current) ?: cookieManager.getCookie(teraboxDomainUrl)
                             }
-                            val cookies = foundCookies.firstOrNull { c ->
-                                com.tera.down.feature.auth.DefaultSessionValidator.AUTH_COOKIE_MARKERS.any { c.lowercase().contains(it) }
-                            } ?: cookieManager.getCookie(teraboxDomainUrl) ?: cookieManager.getCookie(current)
 
                             val ua = wv?.settings?.userAgentString ?: ""
                             viewModel.onDone(teraboxDomainUrl, cookies, ua)
@@ -377,6 +377,16 @@ fun InteractiveAuthScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Retry", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    if (uiState.isNetworkError || uiState.canRetry) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Button(
+                            onClick = { viewModel.forceAcceptSession() },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Use Anyway", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }

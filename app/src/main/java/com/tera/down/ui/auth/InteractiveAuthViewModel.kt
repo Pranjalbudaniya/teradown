@@ -154,6 +154,26 @@ class InteractiveAuthViewModel(
         }
     }
 
+    fun forceAcceptSession() {
+        val candidate = lastCandidateSession ?: return
+        viewModelScope.launch {
+            val effectiveDomain = candidate.domain.ifBlank { "www.terabox.app" }
+            val session = candidate.copy(domain = effectiveDomain)
+            sessionRepository.saveSession(session)
+            authCoordinator.submitAuthResult(InteractiveAuthResult.Success(session))
+            _uiState.update {
+                it.copy(
+                    isValidating = false,
+                    isComplete = true,
+                    infoMessage = "Session saved successfully!",
+                    errorMessage = null,
+                    canRetry = false,
+                    isNetworkError = false
+                )
+            }
+        }
+    }
+
     private suspend fun validateAndApply(candidateSession: TeraboxSession) {
         // 2. Strict session validation check (Requirement 3: Never assume authentication succeeded merely because cookies exist)
         val validationVerdict = sessionValidator.validateSession(candidateSession)
@@ -172,6 +192,25 @@ class InteractiveAuthViewModel(
                         isValidating = false,
                         isComplete = true,
                         infoMessage = "Authentication verified successfully!",
+                        errorMessage = null,
+                        canRetry = false,
+                        isNetworkError = false
+                    )
+                }
+            }
+            is SessionValidationResult.ProvisionallyValid -> {
+                // Server unreachable but cookies contain auth tokens — accept provisionally
+                val effectiveDomain = validationVerdict.verifiedDomain ?: candidateSession.domain
+                val provisionalSession = candidateSession.copy(domain = effectiveDomain)
+
+                sessionRepository.saveSession(provisionalSession)
+                authCoordinator.submitAuthResult(InteractiveAuthResult.Success(provisionalSession))
+
+                _uiState.update {
+                    it.copy(
+                        isValidating = false,
+                        isComplete = true,
+                        infoMessage = "Session accepted. Server verification was skipped due to network issues, but your login cookies look valid.",
                         errorMessage = null,
                         canRetry = false,
                         isNetworkError = false

@@ -270,6 +270,14 @@ class SettingsViewModel(
                         )
                     }
                 }
+                is SessionValidationResult.ProvisionallyValid -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Session accepted (server unreachable, but auth cookies present). Domain: ${result.verifiedDomain ?: session.domain}"
+                        )
+                    }
+                }
                 is SessionValidationResult.NetworkError -> {
                     _uiState.update {
                         it.copy(

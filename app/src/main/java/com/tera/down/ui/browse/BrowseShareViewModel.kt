@@ -145,13 +145,27 @@ class BrowseShareViewModel(
     private val queueRepository: DownloadQueueRepository? = null,
     private val resolverRegistry: ShareLinkResolverRegistry? = null,
     private val fallbackResolver: ShareLinkResolver? = null,
-    private val settingsRepository: com.tera.down.feature.settings.SettingsRepository? = null
+    private val settingsRepository: com.tera.down.feature.settings.SettingsRepository? = null,
+    private val sessionRepository: com.tera.down.feature.auth.SessionRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(BrowseShareUiState())
     val uiState: StateFlow<BrowseShareUiState> = _uiState.asStateFlow()
 
     private var activeScanJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            sessionRepository?.sessionFlow?.collect { session ->
+                if (session != null && !session.isExpired) {
+                    val url = _uiState.value.currentUrl
+                    if (url.isNotBlank() && _uiState.value.contentState !is BrowseContentState.Success) {
+                        loadShare(url, _uiState.value.currentPwd, _uiState.value.currentDir)
+                    }
+                }
+            }
+        }
+    }
 
     fun loadShare(
         url: String,
@@ -802,7 +816,8 @@ class BrowseShareViewModel(
                     queueRepository = app?.container?.downloadQueueRepository,
                     resolverRegistry = app?.container?.shareLinkResolverRegistry,
                     fallbackResolver = app?.container?.teraboxShareLinkResolver,
-                    settingsRepository = app?.container?.settingsRepository
+                    settingsRepository = app?.container?.settingsRepository,
+                    sessionRepository = app?.container?.sessionRepository
                 )
             }
         }

@@ -34,7 +34,8 @@ class TeraboxShareLinkResolver(
     private val sessionRepository: com.tera.down.feature.auth.SessionRepository? = null,
     private val authCoordinator: com.tera.down.feature.auth.AuthCoordinator? = null,
     private val classifier: com.tera.down.feature.resolver.classification.TeraboxResponseClassifier =
-        com.tera.down.feature.resolver.classification.TeraboxResponseClassifier()
+        com.tera.down.feature.resolver.classification.TeraboxResponseClassifier(),
+    private val maxAuthAttempts: Int = 2
 ) : ShareLinkResolver {
 
     override val supportedDomains: Set<String> get() = TeraboxShareLinkParser.supportedDomains
@@ -103,7 +104,18 @@ class TeraboxShareLinkResolver(
 
         val alternateForms = AlternateUrlFormGenerator.generateForms(shareLink)
         var alternateFormIndex = 0
-        var currentHost = host
+
+        // Prioritize working/saved session domain, then link host, then verified mirrors
+        val candidateHosts = (listOfNotNull(
+            sessionRepository?.getSession()?.domain?.takeIf { it.isNotBlank() },
+            host
+        ) + com.tera.down.feature.auth.DefaultSessionValidator.VERIFIED_MIRROR_DOMAINS)
+            .distinct()
+            .filter { canHandle(it) || it.contains("terabox") || it.contains("1024tera") }
+            .toMutableList()
+
+        var candidateHostIndex = 0
+        var currentHost = candidateHosts.firstOrNull() ?: host
         var endpointUrl: HttpUrl = buildEndpointUrl(currentHost)
             ?: return@withContext ShareResolveResult.Failure(
                 errorType = ShareResolveErrorType.INVALID_URL,
@@ -159,12 +171,30 @@ class TeraboxShareLinkResolver(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: SocketTimeoutException) {
+                if (candidateHostIndex < candidateHosts.size - 1) {
+                    candidateHostIndex++
+                    currentHost = candidateHosts[candidateHostIndex]
+                    val newEndpoint = buildEndpointUrl(currentHost)
+                    if (newEndpoint != null) {
+                        endpointUrl = newEndpoint
+                        continue
+                    }
+                }
                 return@withContext ShareResolveResult.Failure(
                     errorType = ShareResolveErrorType.TIMEOUT,
-                    message = "Connection timed out while resolving share link.",
+                    message = "Connection timed out while resolving share link on all mirror domains.",
                     cause = e
                 )
             } catch (e: IOException) {
+                if (candidateHostIndex < candidateHosts.size - 1) {
+                    candidateHostIndex++
+                    currentHost = candidateHosts[candidateHostIndex]
+                    val newEndpoint = buildEndpointUrl(currentHost)
+                    if (newEndpoint != null) {
+                        endpointUrl = newEndpoint
+                        continue
+                    }
+                }
                 return@withContext ShareResolveResult.Failure(
                     errorType = ShareResolveErrorType.NETWORK_ERROR,
                     message = "Network error while reaching share resolver: ${e.message ?: "Unknown I/O error"}",
@@ -193,7 +223,7 @@ class TeraboxShareLinkResolver(
                 is com.tera.down.feature.resolver.classification.ResponseVerdict.NotLoggedIn,
                 is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit,
                 is com.tera.down.feature.resolver.classification.ResponseVerdict.UnknownHtml -> {
-                    if (authCoordinator != null && authAttempts < 2) {
+                    if (authCoordinator != null && authAttempts < maxAuthAttempts) {
                         val reason = when (verdict) {
                             is com.tera.down.feature.resolver.classification.ResponseVerdict.NotLoggedIn -> verdict.reason
                             is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit -> verdict.reason
@@ -268,7 +298,7 @@ class TeraboxShareLinkResolver(
                     }
 
                     // 3. Request interactive auth so user can dismiss overlay in WebView (counts toward 2-attempt cap)
-                    if (authCoordinator != null && authAttempts < 2) {
+                    if (authCoordinator != null && authAttempts < maxAuthAttempts) {
                         val authResult = authCoordinator.requestInteractiveAuth(
                             shareLink.originalUrl,
                             "Terabox app promo screen encountered. Please dismiss the promo overlay to continue."

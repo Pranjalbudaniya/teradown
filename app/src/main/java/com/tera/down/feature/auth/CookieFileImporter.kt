@@ -129,6 +129,7 @@ class CookieFileImporter(
         val validationResult = sessionValidator.validateSession(candidateSession)
         val verifiedDomain = when (validationResult) {
             is SessionValidationResult.Valid -> validationResult.verifiedDomain ?: candidateSession.domain
+            is SessionValidationResult.ProvisionallyValid -> validationResult.verifiedDomain ?: candidateSession.domain
             is SessionValidationResult.NetworkError -> {
                 return CookieImportResult.NetworkFailure(
                     "Network error verifying session with Terabox servers: ${validationResult.reason}"
