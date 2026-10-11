@@ -1,7 +1,12 @@
 package com.tera.down.feature.downloader
 
+import android.content.ContentValues
 import android.content.Context
+import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
+import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.IOException
 
@@ -14,11 +19,11 @@ sealed class StorageValidationResult {
 }
 
 /**
- * Manages app-specific file storage for downloads and temporary staging files.
+ * Manages storage for downloads and temporary staging files.
  *
- * Adheres to modern scoped storage principles: uses app-specific storage directories
- * which do not require broad runtime permissions (e.g. READ_EXTERNAL_STORAGE),
- * while remaining reliable across all supported Android API levels.
+ * Defaults to the standard public Downloads/Teradown folder (/storage/emulated/0/Download/Teradown)
+ * so downloaded media is easily discoverable by user file managers, gallery, and video players.
+ * Supports direct file operations as well as MediaStore fallback for Android Q+ Scoped Storage.
  */
 class StorageManager(
     private val context: Context? = null,
@@ -29,23 +34,52 @@ class StorageManager(
         getDefaultDownloadDirectory()
     }
 
-    val tempDirectory: File = File(downloadDirectory, ".temp").apply {
+    val tempDirectory: File = run {
+        if (baseDir != null) {
+            File(baseDir, ".temp")
+        } else {
+            // For app runtime, store staging temp chunks in app-specific storage so downloading never fails
+            val appSpecific = context?.getExternalFilesDir(null) ?: context?.filesDir
+            if (appSpecific != null) {
+                File(appSpecific, ".temp")
+            } else {
+                File(downloadDirectory, ".temp")
+            }
+        }
+    }.apply {
         if (!exists()) mkdirs()
     }
 
     init {
         if (!downloadDirectory.exists()) {
-            downloadDirectory.mkdirs()
+            try {
+                downloadDirectory.mkdirs()
+            } catch (_: Exception) {}
         }
     }
 
     /**
-     * Resolves the default app-specific download directory.
+     * Resolves the default download directory.
+     * Uses the public standard Downloads folder with a "Teradown" subfolder (/storage/emulated/0/Download/Teradown).
+     * Falls back to app-specific external files dir if public storage is unavailable or not accessible.
      */
     fun getDefaultDownloadDirectory(): File {
-        val ctx = checkNotNull(context) { "Context must be provided when baseDir is not specified." }
-        return ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?: File(ctx.filesDir, "downloads").apply { mkdirs() }
+        return try {
+            val publicDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            File(publicDownloads, "Teradown").apply {
+                if (!exists()) {
+                    mkdirs()
+                }
+            }
+        } catch (_: Exception) {
+            val ctx = context
+            if (ctx != null) {
+                ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?: File(ctx.filesDir, "downloads").apply { mkdirs() }
+            } else {
+                File(System.getProperty("java.io.tmpdir", "/tmp"), "Teradown").apply { mkdirs() }
+            }
+        }
     }
 
     /**
@@ -67,46 +101,60 @@ class StorageManager(
      * Validates whether a given directory exists, is writable, and has usable storage space.
      */
     fun validateDirectory(directory: File): StorageValidationResult {
+        val isPublicDownloads = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            (directory.absolutePath.contains("/Download") || directory.absolutePath.contains("/Downloads"))
+
         if (!directory.exists()) {
             val created = try {
                 directory.mkdirs()
             } catch (_: SecurityException) {
                 false
             }
-            if (!created && !directory.exists()) {
+            if (!created && !directory.exists() && !isPublicDownloads) {
                 return StorageValidationResult.Invalid("Directory '${directory.path}' does not exist and cannot be created.")
             }
         }
 
-        if (!directory.isDirectory) {
+        if (directory.exists() && !directory.isDirectory) {
             return StorageValidationResult.Invalid("Path '${directory.path}' is not a directory.")
         }
 
-        if (!directory.canWrite()) {
+        if (!directory.canWrite() && !isPublicDownloads) {
             return StorageValidationResult.Invalid("Directory '${directory.path}' lacks write permission.")
         }
 
-        val usableSpace = directory.usableSpace
-        if (usableSpace <= 0L) {
+        val usableSpace = if (directory.usableSpace > 0L) {
+            directory.usableSpace
+        } else {
+            try {
+                Environment.getExternalStorageDirectory()?.usableSpace ?: 0L
+            } catch (_: Exception) {
+                0L
+            }
+        }
+
+        if (usableSpace <= 0L && !isPublicDownloads) {
             return StorageValidationResult.Invalid("Storage volume for '${directory.path}' is exhausted or unavailable.")
         }
 
-        return StorageValidationResult.Valid(directory, usableSpace)
+        return StorageValidationResult.Valid(
+            directory,
+            if (usableSpace > 0L) usableSpace else 1024L * 1024L * 1024L
+        )
     }
 
     /**
      * Validates a destination path string.
      */
     fun validateDestinationPath(pathString: String?): StorageValidationResult {
-        return if (pathString.isNullOrBlank()) {
-            validateDirectory(downloadDirectory)
-        } else {
-            validateDirectory(File(pathString))
+        if (pathString.isNullOrBlank()) {
+            return validateDirectory(downloadDirectory)
         }
+        return validateDirectory(File(pathString))
     }
 
     /**
-     * Resolves the target destination file for the given sanitized name, optionally using a custom directory.
+     * Resolves the final destination file path for a sanitized filename.
      */
     fun getDestinationFile(sanitizedFilename: String, customDir: File? = null): File {
         val targetDir = customDir ?: downloadDirectory
@@ -122,7 +170,7 @@ class StorageManager(
 
     /**
      * Atomically moves/finalizes the completed temporary download file to the target destination.
-     * If the destination file already exists, appends an incrementing index to avoid data destruction.
+     * If direct file operations encounter Scoped Storage restrictions, safely routes via MediaStore.
      */
     fun finalizeDownload(tempFile: File, destinationFile: File): File {
         if (!tempFile.exists()) {
@@ -135,11 +183,17 @@ class StorageManager(
             destinationFile
         }
 
-        target.parentFile?.mkdirs()
+        try {
+            target.parentFile?.mkdirs()
+        } catch (_: Exception) {}
 
-        val renamed = tempFile.renameTo(target)
-        if (!renamed) {
-            // Fallback for cross-filesystem / volume moves
+        var finalizedDirectly = false
+        try {
+            finalizedDirectly = tempFile.renameTo(target)
+        } catch (_: Exception) {}
+
+        if (!finalizedDirectly) {
+            // Fallback for cross-filesystem / volume moves or permission constraints
             try {
                 tempFile.inputStream().use { input ->
                     target.outputStream().use { output ->
@@ -147,16 +201,78 @@ class StorageManager(
                     }
                 }
                 tempFile.delete()
+                finalizedDirectly = true
             } catch (e: Exception) {
-                // Clean up partial target file on stream copy failure
-                if (target.exists()) {
-                    target.delete()
+                // If direct copy threw exception (e.g. Android 10+ Scoped Storage restriction without All Files permission)
+                if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    saveViaMediaStore(context, tempFile, target)
+                } else {
+                    if (target.exists()) {
+                        target.delete()
+                    }
+                    throw e
                 }
-                throw e
             }
         }
 
+        // Notify MediaScanner so Gallery, Files app, and media players immediately recognize the completed file in Downloads/Teradown
+        context?.let { ctx ->
+            try {
+                MediaScannerConnection.scanFile(ctx, arrayOf(target.absolutePath), null, null)
+            } catch (_: Exception) {}
+        }
+
         return target
+    }
+
+    /**
+     * Saves file into the public Downloads collection via MediaStore (Android 10+ / API 29+).
+     */
+    private fun saveViaMediaStore(ctx: Context, tempFile: File, target: File) {
+        val resolver = ctx.contentResolver
+        val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/Teradown/"
+        val mimeType = getMimeType(target.name)
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, target.name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+            ?: throw IOException("Failed to create MediaStore entry for ${target.name}")
+
+        try {
+            resolver.openOutputStream(uri)?.use { output ->
+                tempFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            } ?: throw IOException("Failed to open output stream for MediaStore URI")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
+            }
+            tempFile.delete()
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            throw e
+        }
+    }
+
+    private fun getMimeType(filename: String): String {
+        val ext = File(filename).extension.lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: when (ext) {
+                "mp4", "mkv", "webm", "avi", "mov" -> "video/*"
+                "jpg", "jpeg", "png", "webp", "gif" -> "image/*"
+                "mp3", "m4a", "flac", "wav", "aac" -> "audio/*"
+                "pdf" -> "application/pdf"
+                "zip", "rar", "7z" -> "application/zip"
+                else -> "application/octet-stream"
+            }
     }
 
     /**

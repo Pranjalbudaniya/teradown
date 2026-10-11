@@ -46,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -270,6 +271,38 @@ fun SettingsScreen(
                         }
                     }
 
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    val isAllFilesGranted = remember(context) {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            android.os.Environment.isExternalStorageManager()
+                        } else true
+                    }
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && !isAllFilesGranted) {
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                        data = android.net.Uri.parse("package:${context.packageName}")
+                                    }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                                    context.startActivity(intent)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Grant All Files Access for Download/Teradown")
+                        }
+                    }
+
                     if (settings.downloadDirectory.isNotBlank()) {
                         OutlinedButton(
                             onClick = { viewModel.resetDownloadDirectoryToDefault() },
@@ -281,7 +314,7 @@ fun SettingsScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(text = "Reset to Default App Storage")
+                            Text(text = "Reset to Default (Download/Teradown)")
                         }
                     }
                 }
