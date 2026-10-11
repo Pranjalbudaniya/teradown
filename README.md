@@ -1,8 +1,26 @@
 # Teledown
 
-**Teledown** is a clean, local-first Android client for inspecting, queueing, downloading, indexing, and playing media from accessible Terabox share links.
+<p align="center">
+  <img src="docs/images/icon.png" width="120" height="120" alt="Teledown App Icon" style="border-radius: 24px;" />
+</p>
 
-Built with modern Android standards in Kotlin and Jetpack Compose, Teledown focuses on transparent user control, resilient background transfers, crash recovery, and offline media playback without any proprietary backend servers.
+<p align="center">
+  <b>A clean, modern, and resilient local-first Android client for Terabox shares.</b>
+</p>
+
+---
+
+## App Preview
+
+<p align="center">
+  <img src="docs/images/screenshot_home.png" width="23%" alt="Home Screen" style="border-radius: 12px; margin: 4px;" />
+  <img src="docs/images/screenshot_downloads.png" width="23%" alt="Downloads Screen" style="border-radius: 12px; margin: 4px;" />
+  <img src="docs/images/screenshot_library.png" width="23%" alt="Library Screen" style="border-radius: 12px; margin: 4px;" />
+  <img src="docs/images/screenshot_settings.png" width="23%" alt="Settings Screen" style="border-radius: 12px; margin: 4px;" />
+</p>
+<p align="center">
+  <sub><b>Home Screen</b> &nbsp;•&nbsp; <b>Downloads Queue</b> &nbsp;•&nbsp; <b>Media Library</b> &nbsp;•&nbsp; <b>App Settings</b></sub>
+</p>
 
 ---
 

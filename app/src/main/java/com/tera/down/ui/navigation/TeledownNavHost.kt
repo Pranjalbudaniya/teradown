@@ -43,11 +43,7 @@ fun TeledownMainScreen(
 
     Scaffold(
         bottomBar = {
-            AnimatedVisibility(
-                visible = isBottomNavVisible,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
+            if (isBottomNavVisible) {
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface,
                     contentColor = MaterialTheme.colorScheme.onSurface
