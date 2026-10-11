@@ -32,21 +32,34 @@ object TeraboxShareLinkParser : ShareLinkParser {
     override val supportedDomains: Set<String> = setOf(
         "terabox.com",
         "teraboxapp.com",
+        "terabox.app",
         "1024tera.com",
         "1024terabox.com",
         "teraboxshare.com",
         "teraboxlink.com",
+        "terasharelink.com",
+        "terafileshare.com",
+        "tibibox.com",
+        "freeterabox.com",
         "dubox.com",
         "mirrobox.com",
         "nephobox.com",
         "4funbox.com",
-        "momerybox.com"
+        "momerybox.com",
+        "terabox.fun",
+        "terafast.me",
+        "terashare.in",
+        "box.sharing.in"
     )
+
+    private val URL_IN_TEXT_REGEX = Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE)
+    private val TEXT_PWD_REGEX = Regex("""(?:pwd|code|password|pass|提取码|提取碼)[:\s=]+([a-zA-Z0-9]{4})""", RegexOption.IGNORE_CASE)
 
     override fun canParse(rawInput: String?): Boolean {
         if (rawInput.isNullOrBlank()) return false
         val trimmed = rawInput.trim()
-        val normalized = if (!trimmed.contains("://")) "https://$trimmed" else trimmed
+        val candidate = URL_IN_TEXT_REGEX.find(trimmed)?.value ?: trimmed
+        val normalized = if (!candidate.contains("://")) "https://$candidate" else candidate
         val host = try {
             URI(normalized).host
         } catch (_: Exception) {
@@ -61,12 +74,13 @@ object TeraboxShareLinkParser : ShareLinkParser {
         }
 
         val trimmed = rawInput.trim()
+        val extractedUrl = URL_IN_TEXT_REGEX.find(trimmed)?.value ?: trimmed
 
         val schemeRegex = "^([a-zA-Z][a-zA-Z0-9+.-]*):\\/\\/".toRegex()
-        val schemeMatch = schemeRegex.find(trimmed)
+        val schemeMatch = schemeRegex.find(extractedUrl)
 
         val normalizedUrl = if (schemeMatch == null) {
-            "https://$trimmed"
+            "https://$extractedUrl"
         } else {
             val scheme = schemeMatch.groupValues[1].lowercase()
             if (scheme != "http" && scheme != "https") {
@@ -74,7 +88,7 @@ object TeraboxShareLinkParser : ShareLinkParser {
                     "Unsupported scheme '$scheme'. Only HTTP and HTTPS URLs are supported."
                 )
             }
-            trimmed
+            extractedUrl
         }
 
         val uri: URI = try {
@@ -96,11 +110,20 @@ object TeraboxShareLinkParser : ShareLinkParser {
         }
 
         val queryParams = parseQueryParams(uri.rawQuery)
-        val pwd = queryParams["pwd"]?.trim()?.ifBlank { null }
+        val fragmentParams = parseQueryParams(uri.rawFragment)
+        var pwd = queryParams["pwd"]?.trim()?.ifBlank { null }
+            ?: fragmentParams["pwd"]?.trim()?.ifBlank { null }
+
+        // If no password in URL query, extract from text if user pasted message
+        if (pwd == null) {
+            pwd = TEXT_PWD_REGEX.find(trimmed)?.groupValues?.getOrNull(1)?.trim()
+        }
 
         val path = uri.path ?: ""
+        val fragment = uri.fragment ?: ""
         var extractedSurl: String? = null
 
+        // 1. Direct /s/ path extraction
         if (path.startsWith("/s/") || path == "/s") {
             val afterS = path.removePrefix("/s/").removePrefix("/s").trim()
             val segment = afterS.substringBefore('/').trim()
@@ -111,6 +134,7 @@ object TeraboxShareLinkParser : ShareLinkParser {
             }
         }
 
+        // 2. Explicit 'surl' query parameter
         if (extractedSurl == null) {
             val surlQuery = queryParams["surl"]
             if (surlQuery != null) {
@@ -122,14 +146,74 @@ object TeraboxShareLinkParser : ShareLinkParser {
             }
         }
 
+        // 3. Known endpoint paths that require surl query parameter
+        val endpointPaths = listOf("/wap/share/filelist", "/share/init", "/share/list", "/sharing/link", "/disk/share")
+        if (extractedSurl == null && endpointPaths.any { path.equals(it, ignoreCase = true) }) {
+            return ShareLinkParseResult.InvalidUrl("Missing share identifier parameter in endpoint URL.")
+        }
+
+        // 4. Alternative share paths (e.g. /share/<surl>, /sharing/<surl>, /wap/link/<surl>)
+        if (extractedSurl == null) {
+            val knownEndpointSegments = setOf("filelist", "init", "list", "link", "share", "main")
+            val altPrefixes = listOf("/share/", "/sharing/", "/wap/link/")
+            for (prefix in altPrefixes) {
+                if (path.startsWith(prefix, ignoreCase = true)) {
+                    val after = path.substring(prefix.length).trim()
+                    val segment = after.substringBefore('/').trim()
+                    if (segment.isNotEmpty() && !knownEndpointSegments.contains(segment.lowercase())) {
+                        extractedSurl = segment
+                        break
+                    }
+                }
+            }
+        }
+
+        // 5. Fragment-based extraction for SPA hash routing (e.g. #/s/1xxxx or #/share/1xxxx)
+        if (extractedSurl == null && fragment.isNotBlank()) {
+            for (prefix in listOf("/s/", "s/", "/share/", "share/")) {
+                if (fragment.contains(prefix, ignoreCase = true)) {
+                    val after = fragment.substring(fragment.indexOf(prefix, ignoreCase = true) + prefix.length).trim()
+                    val segment = after.substringBefore('/').substringBefore('&').substringBefore('?').trim()
+                    if (segment.isNotEmpty()) {
+                        extractedSurl = segment
+                        break
+                    }
+                }
+            }
+        }
+
+        // 6. Secondary query parameter extraction (?shorturl=..., ?shareid=..., ?share_id=..., ?id=...)
+        if (extractedSurl == null) {
+            val queryCandidates = listOf("shorturl", "shareid", "share_id", "id")
+            for (candidate in queryCandidates) {
+                val value = queryParams[candidate]?.trim()
+                if (!value.isNullOrBlank()) {
+                    extractedSurl = value
+                    break
+                }
+            }
+        }
+
+        // 7. Query param from fragment (e.g. #...?surl=...)
+        if (extractedSurl == null) {
+            val queryCandidates = listOf("surl", "shorturl", "shareid", "share_id", "id")
+            for (candidate in queryCandidates) {
+                val value = fragmentParams[candidate]?.trim()
+                if (!value.isNullOrBlank()) {
+                    extractedSurl = value
+                    break
+                }
+            }
+        }
+
         if (extractedSurl.isNullOrBlank()) {
             return ShareLinkParseResult.InvalidUrl(
-                "URL does not contain a recognized Terabox share path ('/s/...') or 'surl' parameter."
+                "URL does not contain a recognized Terabox share path ('/s/...') or share identifier parameter."
             )
         }
 
         val shareLink = ShareLink(
-            originalUrl = trimmed,
+            originalUrl = extractedUrl,
             surl = extractedSurl,
             pwd = pwd,
             host = host.lowercase()

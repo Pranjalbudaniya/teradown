@@ -364,6 +364,19 @@ class BrowseShareViewModel(
                 }
             }
 
+            is ShareResolveResult.AppOnly -> {
+                _uiState.update {
+                    it.copy(
+                        contentState = BrowseContentState.Error(
+                            title = "App-Only Content",
+                            message = result.message,
+                            canRetry = false
+                        ),
+                        isDemoData = false
+                    )
+                }
+            }
+
             is ShareResolveResult.DirectDownloadUnavailable -> {
                 _uiState.update {
                     it.copy(

@@ -91,6 +91,7 @@ fun BrowseShareScreen(
     onNavigateBack: () -> Unit,
     onNavigateToDownloads: () -> Unit,
     onPlayDirectVideo: ((url: String, title: String, fsId: String) -> Unit)? = null,
+    onNavigateToAuth: ((url: String) -> Unit)? = null,
     modifier: Modifier = Modifier,
     viewModel: BrowseShareViewModel = viewModel(factory = BrowseShareViewModel.Factory)
 ) {
@@ -193,13 +194,36 @@ fun BrowseShareScreen(
                 }
 
                 is BrowseContentState.Error -> {
-                    TeledownEmptyState(
-                        icon = Icons.Default.Block,
-                        title = state.title,
-                        description = state.message,
-                        actionButtonText = if (state.canRetry) "Retry Inspection" else null,
-                        onActionClick = { viewModel.loadShare(url, pwd) }
-                    )
+                    val isAuthOrSecurity = state.title.contains("Authentication", ignoreCase = true) ||
+                        state.title.contains("Security", ignoreCase = true) ||
+                        state.title.contains("Rate Limited", ignoreCase = true) ||
+                        state.message.contains("login", ignoreCase = true) ||
+                        state.message.contains("verification", ignoreCase = true) ||
+                        state.message.contains("challenge", ignoreCase = true)
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        TeledownEmptyState(
+                            icon = Icons.Default.Block,
+                            title = state.title,
+                            description = state.message,
+                            actionButtonText = if (state.canRetry) "Retry Inspection" else null,
+                            onActionClick = { viewModel.loadShare(url, pwd) }
+                        )
+                        if (isAuthOrSecurity && onNavigateToAuth != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { onNavigateToAuth(url) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Text("Open In-App Verification")
+                            }
+                        }
+                    }
                 }
 
                 is BrowseContentState.Empty -> {

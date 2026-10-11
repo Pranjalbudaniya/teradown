@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,7 +30,11 @@ class TeraboxShareLinkResolver(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val cookieProvider: (() -> String?)? = null,
     private val baseUrlOverride: String? = null,
-    private val mediaClassifier: (String, Int?) -> MediaType = { name, cat -> MediaClassifier.classify(name, cat) }
+    private val mediaClassifier: (String, Int?) -> MediaType = { name, cat -> MediaClassifier.classify(name, cat) },
+    private val sessionRepository: com.tera.down.feature.auth.SessionRepository? = null,
+    private val authCoordinator: com.tera.down.feature.auth.AuthCoordinator? = null,
+    private val classifier: com.tera.down.feature.resolver.classification.TeraboxResponseClassifier =
+        com.tera.down.feature.resolver.classification.TeraboxResponseClassifier()
 ) : ShareLinkResolver {
 
     override val supportedDomains: Set<String> get() = TeraboxShareLinkParser.supportedDomains
@@ -63,127 +68,254 @@ class TeraboxShareLinkResolver(
             )
         }
 
+        // Check for expired session before initiating resolution
+        val currentSession = sessionRepository?.getSession()
+        if (currentSession != null && currentSession.isExpired && authCoordinator != null) {
+            val preAuthResult = authCoordinator.requestInteractiveAuth(
+                shareLink.originalUrl,
+                "Saved session has expired. Please refresh your login session."
+            )
+            if (preAuthResult is com.tera.down.feature.auth.InteractiveAuthResult.Cancelled) {
+                return@withContext ShareResolveResult.AuthRequired("Authentication cancelled by user.")
+            }
+        }
+
         // Build target endpoint URL
-        val base = baseUrlOverride?.trimEnd('/') ?: "https://$host"
         val effectivePassword = password?.trim()?.ifBlank { null } ?: shareLink.pwd?.trim()?.ifBlank { null }
         val rootFlag = if (dirPath == "/" || dirPath.isBlank()) "1" else "0"
 
-        val endpointUrl = "$base/api/share/list".toHttpUrlOrNull()
-            ?.newBuilder()
-            ?.addQueryParameter("shorturl", shareLink.surlWithoutLeadingOne)
-            ?.addQueryParameter("dir", dirPath)
-            ?.addQueryParameter("page", page.toString())
-            ?.addQueryParameter("num", "100")
-            ?.addQueryParameter("root", rootFlag)
-            ?.apply {
-                if (!effectivePassword.isNullOrBlank()) {
-                    addQueryParameter("pwd", effectivePassword)
+        fun buildEndpointUrl(targetHost: String): okhttp3.HttpUrl? {
+            val base = baseUrlOverride?.trimEnd('/') ?: "https://$targetHost"
+            return "$base/api/share/list".toHttpUrlOrNull()
+                ?.newBuilder()
+                ?.addQueryParameter("shorturl", shareLink.surlWithoutLeadingOne)
+                ?.addQueryParameter("dir", dirPath)
+                ?.addQueryParameter("page", page.toString())
+                ?.addQueryParameter("num", "100")
+                ?.addQueryParameter("root", rootFlag)
+                ?.apply {
+                    if (!effectivePassword.isNullOrBlank()) {
+                        addQueryParameter("pwd", effectivePassword)
+                    }
                 }
-            }
-            ?.build()
+                ?.build()
+        }
 
-        if (endpointUrl == null) {
-            return@withContext ShareResolveResult.Failure(
+        val alternateForms = AlternateUrlFormGenerator.generateForms(shareLink)
+        var alternateFormIndex = 0
+        var currentHost = host
+        var endpointUrl: HttpUrl = buildEndpointUrl(currentHost)
+            ?: return@withContext ShareResolveResult.Failure(
                 errorType = ShareResolveErrorType.INVALID_URL,
                 message = "Unable to construct resolver endpoint URL."
             )
-        }
 
-        val requestBuilder = Request.Builder()
-            .url(endpointUrl)
-            .get()
-            .header("User-Agent", "Teradown/1.0 (Android)")
-            .header("Accept", "application/json, text/plain, */*")
+        var authAttempts = 0
+        while (true) {
+            if (!currentCoroutineContext().isActive) {
+                throw CancellationException("Resolution cancelled before request.")
+            }
 
-        // Attach authorized session cookie if available
-        cookieProvider?.invoke()?.let { cookieStr ->
-            if (cookieStr.isNotBlank()) {
+            val session = sessionRepository?.getSession()
+            val effectiveUserAgent = session?.userAgent?.ifBlank { null }
+                ?: com.tera.down.ui.auth.DesktopWebViewConfigurator.desktopUserAgent(null)
+
+            val requestBuilder = Request.Builder()
+                .url(endpointUrl)
+                .get()
+                .header("User-Agent", effectiveUserAgent)
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Accept-Language", session?.acceptLanguage ?: "en-US,en;q=0.9")
+                .header("Referer", shareLink.originalUrl)
+
+            // Attach authorized session cookie if available
+            val cookieStr = cookieProvider?.invoke() ?: sessionRepository?.getCookieHeader(currentHost)
+            if (!cookieStr.isNullOrBlank()) {
                 requestBuilder.header("Cookie", cookieStr)
             }
-        }
 
-        val request = requestBuilder.build()
+            val request = requestBuilder.build()
 
-        try {
-            httpClient.newCall(request).execute().use { response ->
-                if (!currentCoroutineContext().isActive) {
-                    throw CancellationException("Resolution cancelled during network execution.")
-                }
+            val verdict = try {
+                httpClient.newCall(request).execute().use { response ->
+                    if (!currentCoroutineContext().isActive) {
+                        throw CancellationException("Resolution cancelled during network execution.")
+                    }
 
-                // Handle HTTP level statuses
-                when (response.code) {
-                    429 -> return@withContext ShareResolveResult.CaptchaOrRateLimited(
-                        "Service returned rate limit (HTTP 429). Please wait before retrying."
-                    )
-                    401 -> return@withContext ShareResolveResult.AuthRequired(
-                        "Authentication required to view this share (HTTP 401)."
-                    )
-                    403 -> return@withContext ShareResolveResult.AuthRequired(
-                        "Access forbidden or login required (HTTP 403)."
-                    )
-                    404 -> return@withContext ShareResolveResult.Cancelled(
-                        "Share link not found or deleted (HTTP 404)."
-                    )
-                    in 500..599 -> return@withContext ShareResolveResult.Failure(
-                        errorType = ShareResolveErrorType.HTTP_ERROR,
-                        message = "Terabox service error (HTTP ${response.code}). Please try again later."
+                    val statusCode = response.code
+                    val finalUrl = response.request.url.toString()
+                    val contentType = response.header("Content-Type")
+                    val bodyString = response.body?.string().orEmpty()
+
+                    classifier.classify(
+                        statusCode = statusCode,
+                        finalUrl = finalUrl,
+                        contentType = contentType,
+                        rawBody = bodyString,
+                        shareLink = shareLink,
+                        providedPassword = effectivePassword
                     )
                 }
-
-                val bodyString = response.body?.string().orEmpty().trim()
-                if (bodyString.isEmpty()) {
-                    return@withContext ShareResolveResult.Failure(
-                        errorType = ShareResolveErrorType.MALFORMED_RESPONSE,
-                        message = "Server returned an empty response body."
-                    )
-                }
-
-                // If response is HTML, it is typically a web login or human verification gate
-                if (bodyString.startsWith("<html", ignoreCase = true) ||
-                    bodyString.startsWith("<!DOCTYPE", ignoreCase = true)
-                ) {
-                    return@withContext ShareResolveResult.UnsupportedAccessFlow(
-                        "The server returned an interactive web page instead of metadata. Login or browser check required."
-                    )
-                }
-
-                val json = SimpleJsonParser.parse(bodyString)
-                if (json == null) {
-                    return@withContext ShareResolveResult.Failure(
-                        errorType = ShareResolveErrorType.MALFORMED_RESPONSE,
-                        message = "Failed to parse service response as JSON."
-                    )
-                }
-
-                return@withContext parseJsonResponse(
-                    json = json,
-                    shareLink = shareLink,
-                    providedPassword = effectivePassword,
-                    dirPath = dirPath,
-                    page = page
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: SocketTimeoutException) {
+                return@withContext ShareResolveResult.Failure(
+                    errorType = ShareResolveErrorType.TIMEOUT,
+                    message = "Connection timed out while resolving share link.",
+                    cause = e
+                )
+            } catch (e: IOException) {
+                return@withContext ShareResolveResult.Failure(
+                    errorType = ShareResolveErrorType.NETWORK_ERROR,
+                    message = "Network error while reaching share resolver: ${e.message ?: "Unknown I/O error"}",
+                    cause = e
+                )
+            } catch (e: Exception) {
+                return@withContext ShareResolveResult.Failure(
+                    errorType = ShareResolveErrorType.MALFORMED_RESPONSE,
+                    message = "Unexpected error parsing share metadata: ${e.message ?: "Unknown error"}",
+                    cause = e
                 )
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: SocketTimeoutException) {
-            return@withContext ShareResolveResult.Failure(
-                errorType = ShareResolveErrorType.TIMEOUT,
-                message = "Connection timed out while resolving share link.",
-                cause = e
-            )
-        } catch (e: IOException) {
-            return@withContext ShareResolveResult.Failure(
-                errorType = ShareResolveErrorType.NETWORK_ERROR,
-                message = "Network error while reaching share resolver: ${e.message ?: "Unknown I/O error"}",
-                cause = e
-            )
-        } catch (e: Exception) {
-            return@withContext ShareResolveResult.Failure(
-                errorType = ShareResolveErrorType.MALFORMED_RESPONSE,
-                message = "Unexpected error parsing share metadata: ${e.message ?: "Unknown error"}",
-                cause = e
-            )
+
+            when (verdict) {
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.Ok -> {
+                    sessionRepository?.recordSuccess(currentHost)
+                    return@withContext parseJsonResponse(
+                        json = verdict.json,
+                        shareLink = shareLink,
+                        providedPassword = effectivePassword,
+                        dirPath = dirPath,
+                        page = page
+                    )
+                }
+
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.NotLoggedIn,
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit,
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.UnknownHtml -> {
+                    if (authCoordinator != null && authAttempts < 2) {
+                        val reason = when (verdict) {
+                            is com.tera.down.feature.resolver.classification.ResponseVerdict.NotLoggedIn -> verdict.reason
+                            is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit -> verdict.reason
+                            is com.tera.down.feature.resolver.classification.ResponseVerdict.UnknownHtml -> verdict.reason
+                            else -> "Authentication required"
+                        }
+                        val authResult = authCoordinator.requestInteractiveAuth(shareLink.originalUrl, reason)
+                        when (authResult) {
+                            is com.tera.down.feature.auth.InteractiveAuthResult.Success -> {
+                                authAttempts++
+                                continue
+                            }
+                            is com.tera.down.feature.auth.InteractiveAuthResult.Cancelled -> {
+                                return@withContext if (verdict is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit) {
+                                    ShareResolveResult.CaptchaOrRateLimited("Verification was cancelled by the user.")
+                                } else {
+                                    ShareResolveResult.AuthRequired("Authentication was cancelled by the user.")
+                                }
+                            }
+                            is com.tera.down.feature.auth.InteractiveAuthResult.MaxAttemptsExceeded -> {
+                                return@withContext if (verdict is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit) {
+                                    ShareResolveResult.CaptchaOrRateLimited(authResult.message)
+                                } else {
+                                    ShareResolveResult.AuthRequired(authResult.message)
+                                }
+                            }
+                            is com.tera.down.feature.auth.InteractiveAuthResult.Error -> {
+                                return@withContext ShareResolveResult.Failure(
+                                    errorType = ShareResolveErrorType.HTTP_ERROR,
+                                    message = authResult.message
+                                )
+                            }
+                        }
+                    }
+
+                    return@withContext when (verdict) {
+                        is com.tera.down.feature.resolver.classification.ResponseVerdict.NotLoggedIn -> ShareResolveResult.AuthRequired(verdict.reason)
+                        is com.tera.down.feature.resolver.classification.ResponseVerdict.CaptchaOrRateLimit -> ShareResolveResult.CaptchaOrRateLimited(verdict.reason)
+                        is com.tera.down.feature.resolver.classification.ResponseVerdict.UnknownHtml -> ShareResolveResult.UnsupportedAccessFlow(verdict.reason)
+                        else -> ShareResolveResult.UnsupportedAccessFlow("Interactive web page returned instead of metadata.")
+                    }
+                }
+
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.AppPromo -> {
+                    // Section 18.6 Recovery sequence:
+                    // 1. Confirm client's UA equals session.user_agent and is desktop UA
+                    val currentSession = sessionRepository?.getSession()
+                    val defaultDesktopUa = com.tera.down.ui.auth.DesktopWebViewConfigurator.desktopUserAgent(null)
+                    var uaFixed = false
+                    if (currentSession != null && (currentSession.userAgent.isBlank() || !currentSession.userAgent.contains("Linux x86_64"))) {
+                        sessionRepository.saveSession(currentSession.copy(userAgent = defaultDesktopUa))
+                        uaFixed = true
+                    }
+
+                    // 2. Retry using next alternate URL form / mirror if available
+                    if (alternateFormIndex < alternateForms.size - 1) {
+                        alternateFormIndex++
+                        val nextUrl = alternateForms[alternateFormIndex]
+                        val nextHost = nextUrl.toHttpUrlOrNull()?.host
+                        if (!nextHost.isNullOrBlank() && canHandle(nextHost) && nextHost != currentHost) {
+                            val newEndpoint = buildEndpointUrl(nextHost)
+                            if (newEndpoint != null) {
+                                currentHost = nextHost
+                                endpointUrl = newEndpoint
+                                continue
+                            }
+                        }
+                    }
+
+                    if (uaFixed) {
+                        continue
+                    }
+
+                    // 3. Request interactive auth so user can dismiss overlay in WebView (counts toward 2-attempt cap)
+                    if (authCoordinator != null && authAttempts < 2) {
+                        val authResult = authCoordinator.requestInteractiveAuth(
+                            shareLink.originalUrl,
+                            "Terabox app promo screen encountered. Please dismiss the promo overlay to continue."
+                        )
+                        when (authResult) {
+                            is com.tera.down.feature.auth.InteractiveAuthResult.Success -> {
+                                authAttempts++
+                                continue
+                            }
+                            is com.tera.down.feature.auth.InteractiveAuthResult.Cancelled -> {
+                                return@withContext ShareResolveResult.AppOnly("Verification cancelled by user during app promo screen.")
+                            }
+                            is com.tera.down.feature.auth.InteractiveAuthResult.MaxAttemptsExceeded -> {
+                                return@withContext ShareResolveResult.AppOnly(authResult.message)
+                            }
+                            is com.tera.down.feature.auth.InteractiveAuthResult.Error -> {
+                                return@withContext ShareResolveResult.Failure(
+                                    errorType = ShareResolveErrorType.HTTP_ERROR,
+                                    message = authResult.message
+                                )
+                            }
+                        }
+                    }
+
+                    // 4. Still APP_PROMO -> return APP_ONLY (Section 18.6 / 18.8)
+                    return@withContext ShareResolveResult.AppOnly(
+                        "Terabox app promo screen persisted. Content is offered in the official app only."
+                    )
+                }
+
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.AppOnly -> {
+                    return@withContext ShareResolveResult.AppOnly(verdict.reason)
+                }
+
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.ResolverError -> {
+                    return@withContext verdict.result
+                }
+
+                is com.tera.down.feature.resolver.classification.ResponseVerdict.HttpError -> {
+                    return@withContext ShareResolveResult.Failure(
+                        errorType = ShareResolveErrorType.HTTP_ERROR,
+                        message = verdict.message
+                    )
+                }
+            }
         }
+        error("Unreachable resolution loop termination.")
     }
 
     private fun parseJsonResponse(

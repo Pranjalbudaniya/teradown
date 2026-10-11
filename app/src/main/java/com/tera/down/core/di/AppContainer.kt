@@ -24,6 +24,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
+import com.tera.down.feature.auth.AuthCoordinator
+import com.tera.down.feature.auth.AuthCoordinatorImpl
+import com.tera.down.feature.auth.DefaultSessionRepository
+import com.tera.down.feature.auth.SessionRepository
+
 private val Context.dataStore by preferencesDataStore(name = "teradown_settings")
 
 /**
@@ -44,6 +49,8 @@ interface AppContainer {
     val downloadRecoveryManager: com.tera.down.feature.downloader.DownloadRecoveryManager
     val settingsRepository: com.tera.down.feature.settings.SettingsRepository
     val networkConnectivityMonitor: com.tera.down.core.network.NetworkConnectivityMonitor
+    val sessionRepository: SessionRepository
+    val authCoordinator: AuthCoordinator
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -126,8 +133,19 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         }
     }
 
+    override val sessionRepository: SessionRepository by lazy {
+        DefaultSessionRepository(context)
+    }
+
+    override val authCoordinator: AuthCoordinator by lazy {
+        AuthCoordinatorImpl()
+    }
+
     override val teraboxShareLinkResolver: TeraboxShareLinkResolver by lazy {
-        TeraboxShareLinkResolver()
+        TeraboxShareLinkResolver(
+            sessionRepository = sessionRepository,
+            authCoordinator = authCoordinator
+        )
     }
 
     override val shareLinkResolverRegistry: ShareLinkResolverRegistry by lazy {

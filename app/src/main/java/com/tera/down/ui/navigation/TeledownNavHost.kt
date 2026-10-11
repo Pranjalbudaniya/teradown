@@ -23,6 +23,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import com.tera.down.TeradownApplication
+import com.tera.down.ui.auth.InteractiveAuthScreen
 import com.tera.down.ui.browse.BrowseShareScreen
 import com.tera.down.ui.downloads.DownloadsScreen
 import com.tera.down.ui.home.HomeScreen
@@ -37,6 +44,18 @@ fun TeledownMainScreen(
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+
+    val context = LocalContext.current
+    val app = context.applicationContext as? TeradownApplication
+    val authRequest by app?.container?.authCoordinator?.authRequestFlow?.collectAsState() ?: remember { mutableStateOf(null) }
+
+    LaunchedEffect(authRequest) {
+        authRequest?.let { req ->
+            if (currentRoute != Screen.InteractiveAuth.route) {
+                navController.navigate(Screen.InteractiveAuth.createRoute(req.shareUrl))
+            }
+        }
+    }
 
     // Show bottom navigation on primary tabs
     val isBottomNavVisible = bottomNavItems.any { it.screen.route == currentRoute }
@@ -139,6 +158,9 @@ fun TeledownMainScreen(
                     onNavigateToDownloads = {
                         navController.navigate(Screen.Downloads.route)
                     },
+                    onNavigateToAuth = { authUrl ->
+                        navController.navigate(Screen.InteractiveAuth.createRoute(authUrl))
+                    },
                     onPlayDirectVideo = { directUrl, title, fsId ->
                         navController.navigate(
                             Screen.Player.createRoute(
@@ -234,6 +256,25 @@ fun TeledownMainScreen(
                     title = decodedTitle,
                     isOnline = isOnline,
                     mediaId = decodedMediaId,
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+
+            // Interactive Auth Destination
+            composable(
+                route = Screen.InteractiveAuth.route,
+                arguments = listOf(
+                    navArgument("url") { type = NavType.StringType; defaultValue = "" }
+                )
+            ) { backStackEntry ->
+                val rawUrl = backStackEntry.arguments?.getString("url").orEmpty()
+                val decodedUrl = try {
+                    URLDecoder.decode(rawUrl, StandardCharsets.UTF_8.toString())
+                } catch (_: Exception) {
+                    rawUrl
+                }
+                InteractiveAuthScreen(
+                    url = decodedUrl,
                     onNavigateBack = { navController.popBackStack() }
                 )
             }

@@ -272,6 +272,11 @@ data class AppError(
                     userMessage = redactSensitive(result.message),
                     isRetryable = false
                 )
+                is ShareResolveResult.AppOnly -> AppError(
+                    code = AppErrorCode.DIRECT_DOWNLOAD_UNAVAILABLE,
+                    userMessage = redactSensitive(result.message),
+                    isRetryable = false
+                )
                 is ShareResolveResult.Failure -> {
                     val safeMsg = redactSensitive(result.message)
                     when (result.errorType) {

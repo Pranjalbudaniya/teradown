@@ -112,6 +112,13 @@ sealed interface ShareResolveResult {
     ) : ShareResolveResult
 
     /**
+     * The file or folder is strictly offered only through the official Terabox mobile application.
+     */
+    data class AppOnly(
+        val message: String = "Terabox is offering this content only through its official app. TeraDown cannot resolve an accessible direct link for this item."
+    ) : ShareResolveResult
+
+    /**
      * Network or system error during resolution.
      */
     data class Failure(

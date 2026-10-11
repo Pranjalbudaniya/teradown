@@ -188,6 +188,17 @@ class OkHttpDownloadEngine(
             }
 
             val mimeType = body.contentType()?.toString()
+            val destName = request.destinationFile.name.lowercase()
+            val isExpectedHtml = destName.endsWith(".html") || destName.endsWith(".htm")
+
+            if (!isExpectedHtml && mimeType != null && mimeType.contains("text/html", ignoreCase = true)) {
+                return DownloadResult.Error(
+                    type = DownloadErrorType.HTTP_ERROR,
+                    message = "Server returned HTML webpage instead of binary file stream (link may have expired or requires login).",
+                    httpStatusCode = 401,
+                    isResumable = false
+                )
+            }
 
             // Stream response directly to storage
             body.byteStream().use { inputStream ->
@@ -203,6 +214,18 @@ class OkHttpDownloadEngine(
 
                         val bytesRead = inputStream.read(buffer)
                         if (bytesRead == -1) break
+
+                        if (downloadedBytesSoFar == 0L && !isExpectedHtml && bytesRead >= 6) {
+                            val prefix = String(buffer, 0, minOf(bytesRead, 128)).trimStart().lowercase()
+                            if (prefix.startsWith("<!doctype html") || prefix.startsWith("<html")) {
+                                return DownloadResult.Error(
+                                    type = DownloadErrorType.HTTP_ERROR,
+                                    message = "Server returned HTML error/promo page instead of file stream.",
+                                    httpStatusCode = 401,
+                                    isResumable = false
+                                )
+                            }
+                        }
 
                         outputStream.write(buffer, 0, bytesRead)
                         downloadedBytesSoFar += bytesRead
