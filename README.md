@@ -1,5 +1,8 @@
 # TeraDown
 
+> [!WARNING]
+> **Notice: The downloader is currently not working.**
+
 <p align="center">
   <img src="docs/images/icon.png" width="120" height="120" alt="TeraDown App Icon" style="border-radius: 24px;" />
 </p>
