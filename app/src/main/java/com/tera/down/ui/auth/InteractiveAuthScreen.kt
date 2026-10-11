@@ -1,6 +1,7 @@
 package com.tera.down.ui.auth
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.view.ViewGroup
@@ -11,6 +12,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +44,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -101,7 +105,7 @@ fun InteractiveAuthScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Log in or solve challenge to continue",
+                            text = if (uiState.isValidating) "Validating session..." else "Log in or solve challenge to continue",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -134,7 +138,7 @@ fun InteractiveAuthScreen(
                                 null
                             )
                         },
-                        enabled = webViewInstance != null
+                        enabled = webViewInstance != null && !uiState.isValidating
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Login,
@@ -169,10 +173,23 @@ fun InteractiveAuthScreen(
                         onClick = {
                             val wv = webViewInstance
                             val current = wv?.url ?: uiState.currentUrl
-                            val cookies = CookieManager.getInstance().getCookie(current)
+
+                            // Requirement 2: Inspect cookies for the validated Terabox URL
+                            val targetUri = try { Uri.parse(current) } catch (_: Exception) { null }
+                            val targetHost = targetUri?.host?.lowercase() ?: "www.terabox.com"
+                            val teraboxDomainUrl = if (targetHost.contains("terabox") || targetHost.contains("1024tera") || targetHost.contains("dubox")) {
+                                "https://$targetHost"
+                            } else {
+                                "https://www.terabox.com"
+                            }
+
+                            val cookieManager = CookieManager.getInstance()
+                            cookieManager.flush()
+                            val cookies = cookieManager.getCookie(teraboxDomainUrl) ?: cookieManager.getCookie(current)
                             val ua = wv?.settings?.userAgentString ?: ""
-                            viewModel.onDone(current, cookies, ua)
-                        }
+                            viewModel.onDone(teraboxDomainUrl, cookies, ua)
+                        },
+                        enabled = !uiState.isValidating
                     ) {
                         Icon(
                             imageVector = Icons.Default.Check,
@@ -181,7 +198,7 @@ fun InteractiveAuthScreen(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Done",
+                            text = if (uiState.isValidating) "Checking..." else "Done",
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -199,15 +216,15 @@ fun InteractiveAuthScreen(
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
         ) {
-            // Loading Progress Bar
-            if (uiState.isLoading) {
+            // Loading or Validating Progress Bar
+            if (uiState.isLoading || uiState.isValidating) {
                 LinearProgressIndicator(
-                    progress = { uiState.progress / 100f },
+                    progress = { if (uiState.isValidating) 0.8f else uiState.progress / 100f },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
 
-            // Info banner explaining that user must complete check themselves
+            // Info banner explaining verification state
             Card(
                 shape = RoundedCornerShape(0.dp),
                 colors = CardDefaults.cardColors(
@@ -229,7 +246,11 @@ fun InteractiveAuthScreen(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = uiState.infoMessage ?: "Complete login or human verification below, then tap Done.",
+                        text = if (uiState.isValidating) {
+                            "Running session validation check with Terabox servers..."
+                        } else {
+                            uiState.infoMessage ?: "Complete login or human verification below, then tap Done."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
@@ -237,8 +258,71 @@ fun InteractiveAuthScreen(
                 }
             }
 
+            // Requirement 4 & 5: Clear Google Sign-In Policy Notice without bypassing Google restrictions
+            if (uiState.isGoogleSignInBlocked) {
+                Card(
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Google Sign-In Policy Notice",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Google restricts sign-in inside embedded app WebViews for security. To continue in TeraDown, please log in with Terabox Email/Password, Phone number, or QR Code.\n\nYou may also open the page in your normal browser, though external browser cookies cannot be imported into TeraDown.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.currentUrl))
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {}
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Open in Browser", style = MaterialTheme.typography.labelSmall)
+                            }
+                            Button(
+                                onClick = {
+                                    webViewInstance?.loadUrl("https://www.terabox.com/main")
+                                    viewModel.onDismissGoogleSignInNotice()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Terabox Login", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Error or Max Promo Hits notice
-            if (uiState.errorMessage != null) {
+            if (uiState.errorMessage != null && !uiState.isGoogleSignInBlocked) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -291,16 +375,35 @@ fun InteractiveAuthScreen(
 
                                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                     super.onPageStarted(view, url, favicon)
-                                    url?.let { viewModel.onUrlChanged(it) }
+                                    url?.let {
+                                        viewModel.onUrlChanged(it)
+                                        if (it.contains("accounts.google.com", ignoreCase = true)) {
+                                            viewModel.onGoogleSignInBlocked()
+                                        }
+                                    }
                                     viewModel.onProgressChanged(10)
                                     DesktopWebViewConfigurator.enableUnrestrictedZoom(view)
                                 }
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
-                                    url?.let { viewModel.onUrlChanged(it) }
+                                    url?.let {
+                                        viewModel.onUrlChanged(it)
+                                        if (it.contains("accounts.google.com", ignoreCase = true)) {
+                                            viewModel.onGoogleSignInBlocked()
+                                        }
+                                    }
                                     viewModel.onProgressChanged(100)
                                     DesktopWebViewConfigurator.enableUnrestrictedZoom(view)
+
+                                    // Check for Google blocked browser message (Requirement 4 & 5)
+                                    view?.evaluateJavascript(
+                                        "(function(){ try { var t = document.body ? document.body.innerText : ''; return (t.includes('disallowed_useragent') || t.includes('This browser or app may not be secure')) ? 'blocked' : ''; } catch(e) { return ''; } })()"
+                                    ) { res ->
+                                        if (res?.contains("blocked") == true) {
+                                            viewModel.onGoogleSignInBlocked()
+                                        }
+                                    }
 
                                     // Bounded read-only JS inspection to detect app promo overlays (Section 18.5)
                                     view?.evaluateJavascript(

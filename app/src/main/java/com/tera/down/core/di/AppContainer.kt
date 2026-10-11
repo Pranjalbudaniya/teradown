@@ -50,6 +50,8 @@ interface AppContainer {
     val settingsRepository: com.tera.down.feature.settings.SettingsRepository
     val networkConnectivityMonitor: com.tera.down.core.network.NetworkConnectivityMonitor
     val sessionRepository: SessionRepository
+    val sessionValidator: com.tera.down.feature.auth.SessionValidator
+    val cookieFileImporter: com.tera.down.feature.auth.CookieFileImporter
     val authCoordinator: AuthCoordinator
 }
 
@@ -133,8 +135,30 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         }
     }
 
+    override val sessionValidator: com.tera.down.feature.auth.SessionValidator by lazy {
+        com.tera.down.feature.auth.DefaultSessionValidator()
+    }
+
     override val sessionRepository: SessionRepository by lazy {
-        DefaultSessionRepository(context)
+        DefaultSessionRepository(context).also { repo ->
+            // Startup validation: check persistent session and purge if revoked/expired
+            applicationScope.launch(Dispatchers.IO) {
+                val existing = repo.getSession()
+                if (existing != null) {
+                    val verdict = sessionValidator.validateSession(existing)
+                    if (verdict is com.tera.down.feature.auth.SessionValidationResult.Invalid) {
+                        repo.clearSession()
+                    }
+                }
+            }
+        }
+    }
+
+    override val cookieFileImporter: com.tera.down.feature.auth.CookieFileImporter by lazy {
+        com.tera.down.feature.auth.CookieFileImporter(
+            sessionRepository = sessionRepository,
+            sessionValidator = sessionValidator
+        )
     }
 
     override val authCoordinator: AuthCoordinator by lazy {

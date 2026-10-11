@@ -61,6 +61,13 @@ object SimpleJsonParser {
         return null
     }
 
+    fun parseAny(raw: String): Any? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        val parser = Lexer(trimmed)
+        return parser.parseValue()
+    }
+
     private class Lexer(private val src: String) {
         private var idx = 0
 

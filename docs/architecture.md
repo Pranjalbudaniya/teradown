@@ -197,3 +197,39 @@ On application startup, `DownloadRecoveryManagerImpl.reconcileAndRecover()` exec
   - `themeMode` (SYSTEM, LIGHT, DARK)
   - `downloadDirectory` (String?)
   - `autoResumeInterrupted` (Boolean)
+
+---
+
+## 11. Terabox Authentication & Cookie Import (`feature/auth`)
+
+Specification Sections 17 & 18 define session persistence, interactive fallback, and manual session import for headless environments or desktop session transfer.
+
+### 11.1 Supported Cookie Formats
+TeraDown supports importing cookie files through the Android Storage Access Framework (`ACTION_OPEN_DOCUMENT`) in Settings under **Terabox Authentication**:
+
+1. **Netscape / Mozilla HTTP Cookie File (`cookies.txt`)**:
+   - Standard 7-column format: `domain`, `flag`, `path`, `secure`, `expiration`, `name`, `value`.
+   - Supports `#HttpOnly_` prefixed lines indicating HttpOnly cookies.
+   - Ignores standard `#` comments and empty lines.
+2. **JSON Cookie Export Format**:
+   - Array of cookie objects exported by browser extensions (e.g., EditThisCookie, Cookie-Editor) containing `name`, `value`, `domain`, `path`, `expirationDate`, `secure`, and `httpOnly`.
+   - Object wrappers with a `"cookies"` array (e.g., Puppeteer/Playwright format).
+   - TeraboxSession export format containing a `"cookieString"` property.
+3. **Raw HTTP Cookie Header String**:
+   - Standard HTTP header format: `Cookie: ndus=...; panweb=1` or `ndus=...; panweb=1`.
+
+### 11.2 Security Attributes & Domain Filtering
+- **Strict Domain Whitelisting:** Cookies are validated against `TeraboxShareLinkParser.supportedDomains` and Baidu infrastructure. Cookies targeting unrelated or third-party domains (e.g., `google.com`, `facebook.com`) are dropped immediately. Files containing zero valid Terabox cookies are rejected with `IrrelevantDomains`.
+- **Token Verification:** Requires at least one authenticating user token marker (e.g., `ndus`, `bduss`, `stoken`, `panweb`). Guest tracking cookies alone are rejected.
+- **Expiry Checking:** Filters out expired entries; if all Terabox cookies have expired, the import is rejected with `ExpiredCookies`.
+- **Server Verification:** Never marks an import successful without performing an online verification call to `/api/user/getInfo`. Rejects login redirects, HTML promo pages, and JSON unauthenticated error codes (`-6`, `105`).
+- **No File Execution / Storage:** The selected file is parsed in memory and never retained on disk. Cookie contents and tokens are never printed to log output or shown in the UI.
+
+### 11.3 Cookie Store Synchronization
+- **OkHttp Client:** Session cookies and captured desktop User-Agent are saved to `SessionRepository` and automatically attached to share resolution and download requests.
+- **Android WebView `CookieManager`:** Validated cookies are synchronized to `CookieManager` across target Terabox hosts (`terabox.com`, `www.terabox.com`, mirror host), allowing embedded WebViews to reuse imported credentials seamlessly.
+
+### 11.4 Known Limitations
+- **Google Sign-In Tokens:** Google restricts OAuth inside embedded WebViews; cookies exported from Google authentication flows cannot be imported or substituted for Terabox session cookies. Only cookies issued for Terabox domains are supported.
+- **IP / Network Bound Sessions:** Some Terabox accounts enforce IP or region binding. If a session was exported under a VPN or distant IP, Terabox servers may reject the session upon validation in TeraDown, requiring re-authentication from the same network.
+

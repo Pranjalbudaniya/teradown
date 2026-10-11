@@ -9,6 +9,11 @@ import com.tera.down.TeradownApplication
 import com.tera.down.core.model.AppSettings
 import com.tera.down.core.model.ThemeMode
 import com.tera.down.core.network.NetworkConnectivityMonitor
+import com.tera.down.feature.auth.CookieFileImporter
+import com.tera.down.feature.auth.CookieImportResult
+import com.tera.down.feature.auth.SessionRepository
+import com.tera.down.feature.auth.SessionValidationResult
+import com.tera.down.feature.auth.SessionValidator
 import com.tera.down.feature.downloader.StorageManager
 import com.tera.down.feature.downloader.StorageValidationResult
 import com.tera.down.feature.settings.SettingsRepository
@@ -27,13 +32,23 @@ data class SettingsUiState(
     val availableStorageFormatted: String = "",
     val isWifiConnected: Boolean = false,
     val isNetworkConnected: Boolean = false,
-    val diagnosticSummary: String? = null
+    val diagnosticSummary: String? = null,
+    val activeSessionDomain: String? = null,
+    val isSessionActive: Boolean = false,
+    val sessionValidationStatus: String? = null,
+    val isImportingCookies: Boolean = false,
+    val isValidatingSession: Boolean = false,
+    val cookieImportMessage: String? = null,
+    val cookieImportError: String? = null
 )
 
 class SettingsViewModel(
     private val settingsRepository: SettingsRepository? = null,
     private val storageManager: StorageManager? = null,
-    private val networkConnectivityMonitor: NetworkConnectivityMonitor? = null
+    private val networkConnectivityMonitor: NetworkConnectivityMonitor? = null,
+    private val sessionRepository: SessionRepository? = null,
+    private val sessionValidator: SessionValidator? = null,
+    private val cookieFileImporter: CookieFileImporter? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -42,6 +57,20 @@ class SettingsViewModel(
     init {
         refreshStorageInfo()
         refreshNetworkInfo()
+
+        sessionRepository?.let { sRepo ->
+            viewModelScope.launch {
+                sRepo.sessionFlow.collect { session ->
+                    _uiState.update {
+                        it.copy(
+                            activeSessionDomain = session?.domain,
+                            isSessionActive = session != null && !session.isExpired,
+                            sessionValidationStatus = if (session != null) "Active session stored" else "No saved session"
+                        )
+                    }
+                }
+            }
+        }
 
         settingsRepository?.let { repo ->
             viewModelScope.launch {
@@ -203,18 +232,183 @@ class SettingsViewModel(
         }
     }
 
+    fun logout() {
+        viewModelScope.launch {
+            sessionRepository?.clearSession()
+            try {
+                android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                android.webkit.CookieManager.getInstance().flush()
+            } catch (_: Throwable) {}
+            _uiState.update {
+                it.copy(
+                    activeSessionDomain = null,
+                    isSessionActive = false,
+                    sessionValidationStatus = "Not signed in",
+                    cookieImportMessage = null,
+                    cookieImportError = null
+                )
+            }
+        }
+    }
+
+    fun validateSession() {
+        viewModelScope.launch {
+            val session = sessionRepository?.getSession()
+            if (session == null) {
+                _uiState.update { it.copy(sessionValidationStatus = "No session stored to validate.") }
+                return@launch
+            }
+            val validator = sessionValidator ?: return@launch
+            _uiState.update { it.copy(isValidatingSession = true, sessionValidationStatus = "Validating session with server...") }
+            val result = validator.validateSession(session)
+            when (result) {
+                is SessionValidationResult.Valid -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Session verified & active!"
+                        )
+                    }
+                }
+                is SessionValidationResult.Invalid -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Session invalid: ${result.reason}"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun importCookieFileContent(rawText: String) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isImportingCookies = true,
+                    cookieImportError = null,
+                    cookieImportMessage = null
+                )
+            }
+
+            val importer = cookieFileImporter ?: (sessionRepository?.let { sRepo ->
+                sessionValidator?.let { sVal ->
+                    CookieFileImporter(sRepo, sVal)
+                }
+            })
+
+            if (importer == null) {
+                _uiState.update {
+                    it.copy(
+                        isImportingCookies = false,
+                        cookieImportError = "Cookie importer is not initialized."
+                    )
+                }
+                return@launch
+            }
+
+            val result = importer.importFromText(rawText)
+            when (result) {
+                is CookieImportResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            isSessionActive = true,
+                            activeSessionDomain = result.domain,
+                            sessionValidationStatus = "Active session verified (${result.cookieCount} cookies imported)",
+                            cookieImportMessage = "Imported ${result.cookieCount} cookies for ${result.domain}. Session verified successfully!",
+                            cookieImportError = null
+                        )
+                    }
+                }
+                is CookieImportResult.InvalidFormat -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            cookieImportError = "Invalid format: ${result.reason}"
+                        )
+                    }
+                }
+                is CookieImportResult.IrrelevantDomains -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            cookieImportError = "Domain mismatch: ${result.reason}"
+                        )
+                    }
+                }
+                is CookieImportResult.ExpiredCookies -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            cookieImportError = "Expired cookies: ${result.reason}"
+                        )
+                    }
+                }
+                is CookieImportResult.MissingAuthTokens -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            cookieImportError = "Missing auth token: ${result.reason}"
+                        )
+                    }
+                }
+                is CookieImportResult.RejectedSession -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            cookieImportError = "Server rejected: ${result.reason}"
+                        )
+                    }
+                }
+                is CookieImportResult.NetworkFailure -> {
+                    _uiState.update {
+                        it.copy(
+                            isImportingCookies = false,
+                            cookieImportError = "Network error: ${result.reason}"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun importCookieFileStream(inputStream: java.io.InputStream) {
+        try {
+            val content = inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            importCookieFileContent(content)
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(cookieImportError = "Unable to read cookie file: ${e.message}")
+            }
+        }
+    }
+
+    fun dismissCookieImportNotice() {
+        _uiState.update {
+            it.copy(cookieImportMessage = null, cookieImportError = null)
+        }
+    }
+
     companion object {
         fun provideFactory(
             settingsRepository: SettingsRepository,
             storageManager: StorageManager,
-            networkConnectivityMonitor: NetworkConnectivityMonitor? = null
+            networkConnectivityMonitor: NetworkConnectivityMonitor? = null,
+            sessionRepository: SessionRepository? = null,
+            sessionValidator: SessionValidator? = null,
+            cookieFileImporter: CookieFileImporter? = null
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 return SettingsViewModel(
                     settingsRepository = settingsRepository,
                     storageManager = storageManager,
-                    networkConnectivityMonitor = networkConnectivityMonitor
+                    networkConnectivityMonitor = networkConnectivityMonitor,
+                    sessionRepository = sessionRepository,
+                    sessionValidator = sessionValidator,
+                    cookieFileImporter = cookieFileImporter
                 ) as T
             }
         }
@@ -225,9 +419,13 @@ class SettingsViewModel(
                 SettingsViewModel(
                     settingsRepository = app?.container?.settingsRepository,
                     storageManager = app?.container?.storageManager,
-                    networkConnectivityMonitor = app?.container?.networkConnectivityMonitor
+                    networkConnectivityMonitor = app?.container?.networkConnectivityMonitor,
+                    sessionRepository = app?.container?.sessionRepository,
+                    sessionValidator = app?.container?.sessionValidator,
+                    cookieFileImporter = app?.container?.cookieFileImporter
                 )
             }
         }
     }
 }
+

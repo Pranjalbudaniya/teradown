@@ -17,9 +17,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
@@ -36,6 +40,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -43,6 +49,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,6 +76,7 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val settings = uiState.settings
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -523,7 +531,232 @@ fun SettingsScreen(
                 }
             }
 
-            // Section 5: Audit & Diagnostics
+            // Section 5: Terabox Authentication (Section 17.3 & 17.5)
+            SettingsSectionHeader(title = "Terabox Authentication")
+
+            // Storage Access Framework Cookie File Picker Launcher (Requirement 2: ACTION_OPEN_DOCUMENT without broad permissions)
+            val cookiePickerLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument()
+            ) { uri: Uri? ->
+                if (uri != null) {
+                    try {
+                        val stream = context.contentResolver.openInputStream(uri)
+                        if (stream != null) {
+                            viewModel.importCookieFileStream(stream)
+                        } else {
+                            viewModel.importCookieFileContent("")
+                        }
+                    } catch (_: Exception) {
+                        viewModel.importCookieFileContent("")
+                    }
+                }
+            }
+
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Header Status Row
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (uiState.isSessionActive) StatusSuccess.copy(alpha = 0.15f)
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (uiState.isSessionActive) Icons.Default.CheckCircle else Icons.Default.Info,
+                                contentDescription = null,
+                                tint = if (uiState.isSessionActive) StatusSuccess else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = if (uiState.isSessionActive) {
+                                        "Connected (${uiState.activeSessionDomain ?: "terabox.com"})"
+                                    } else {
+                                        "No Active Session"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                // Authentication status indicator badge
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = if (uiState.isSessionActive) StatusSuccess.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    Text(
+                                        text = if (uiState.isSessionActive) "Authenticated" else "Unauthenticated",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (uiState.isSessionActive) StatusSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = uiState.sessionValidationStatus
+                                    ?: if (uiState.isSessionActive) "Session active and verified with Terabox servers"
+                                    else "Authenticate via in-app browser or import a valid cookie file.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Progress indicator during import or validation
+                    if (uiState.isValidatingSession || uiState.isImportingCookies) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+
+                    // Success Feedback Banner
+                    if (uiState.cookieImportMessage != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(StatusSuccess.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = StatusSuccess,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = uiState.cookieImportMessage ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StatusSuccess,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { viewModel.dismissCookieImportNotice() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = StatusSuccess,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Error Feedback Banner
+                    if (uiState.cookieImportError != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(StatusError.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = StatusError,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = uiState.cookieImportError ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StatusError,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { viewModel.dismissCookieImportNotice() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = StatusError,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Action Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                cookiePickerLauncher.launch(
+                                    arrayOf("text/*", "application/json", "*/*")
+                                )
+                            },
+                            enabled = !uiState.isImportingCookies && !uiState.isValidatingSession,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (uiState.isImportingCookies) "Importing..." else "Import Cookie File",
+                                maxLines = 1
+                            )
+                        }
+
+                        if (uiState.isSessionActive) {
+                            OutlinedButton(
+                                onClick = { viewModel.validateSession() },
+                                enabled = !uiState.isValidatingSession && !uiState.isImportingCookies,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (uiState.isValidatingSession) "Checking..." else "Validate Session",
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    if (uiState.isSessionActive) {
+                        Button(
+                            onClick = { viewModel.logout() },
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Log Out")
+                        }
+                    } else {
+                        Text(
+                            text = "Importing a cookie file is optional (supports Netscape cookies.txt and JSON exports). You can also authenticate normally via the in-app browser when downloading.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Section 6: Audit & Diagnostics
             SettingsSectionHeader(title = "Audit & Diagnostics")
 
             Card(
