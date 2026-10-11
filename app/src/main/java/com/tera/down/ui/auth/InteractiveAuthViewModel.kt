@@ -30,7 +30,9 @@ data class InteractiveAuthUiState(
     val isComplete: Boolean = false,
     val promoOverlayDetected: Boolean = false,
     val maxPromoHitsReached: Boolean = false,
-    val isGoogleSignInBlocked: Boolean = false
+    val isGoogleSignInBlocked: Boolean = false,
+    val canRetry: Boolean = false,
+    val isNetworkError: Boolean = false
 )
 
 class InteractiveAuthViewModel(
@@ -41,6 +43,8 @@ class InteractiveAuthViewModel(
 
     private val _uiState = MutableStateFlow(InteractiveAuthUiState())
     val uiState: StateFlow<InteractiveAuthUiState> = _uiState.asStateFlow()
+
+    private var lastCandidateSession: TeraboxSession? = null
 
     fun initialize(url: String) {
         if (_uiState.value.initialUrl.isBlank()) {
@@ -109,23 +113,24 @@ class InteractiveAuthViewModel(
 
     fun onDone(currentUrl: String, cookieString: String?, userAgent: String) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isValidating = true, errorMessage = null) }
+            _uiState.update { it.copy(isValidating = true, errorMessage = null, canRetry = false) }
 
             // 1. Presence check (Requirement 2 & 10)
             if (cookieString.isNullOrBlank()) {
                 _uiState.update {
                     it.copy(
                         isValidating = false,
-                        errorMessage = "No session cookies detected. Please ensure you have signed in or solved the check before tapping Done."
+                        errorMessage = "No session cookies detected. Please ensure you have signed in or solved the check before tapping Done.",
+                        canRetry = false
                     )
                 }
                 return@launch
             }
 
             val domain = try {
-                URI(currentUrl).host ?: "terabox.com"
+                URI(currentUrl).host ?: "www.terabox.app"
             } catch (_: Exception) {
-                "terabox.com"
+                "www.terabox.app"
             }
 
             val candidateSession = TeraboxSession(
@@ -136,28 +141,93 @@ class InteractiveAuthViewModel(
                 lastOkAt = System.currentTimeMillis()
             )
 
-            // 2. Strict session validation check (Requirement 3: Never assume authentication succeeded merely because cookies exist)
-            val validationVerdict = sessionValidator.validateSession(candidateSession)
-            if (validationVerdict is SessionValidationResult.Invalid) {
+            lastCandidateSession = candidateSession
+            validateAndApply(candidateSession)
+        }
+    }
+
+    fun retryValidation() {
+        val candidate = lastCandidateSession ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isValidating = true, errorMessage = null, canRetry = false) }
+            validateAndApply(candidate)
+        }
+    }
+
+    private suspend fun validateAndApply(candidateSession: TeraboxSession) {
+        // 2. Strict session validation check (Requirement 3: Never assume authentication succeeded merely because cookies exist)
+        val validationVerdict = sessionValidator.validateSession(candidateSession)
+
+        when (validationVerdict) {
+            is SessionValidationResult.Valid -> {
+                val effectiveDomain = validationVerdict.verifiedDomain ?: candidateSession.domain
+                val verifiedSession = candidateSession.copy(domain = effectiveDomain)
+
+                // 3. Persist verified session
+                sessionRepository.saveSession(verifiedSession)
+                authCoordinator.submitAuthResult(InteractiveAuthResult.Success(verifiedSession))
+
                 _uiState.update {
                     it.copy(
                         isValidating = false,
-                        errorMessage = "Session validation check failed: ${validationVerdict.reason}. Please make sure you are logged in to your Terabox account."
+                        isComplete = true,
+                        infoMessage = "Authentication verified successfully!",
+                        errorMessage = null,
+                        canRetry = false,
+                        isNetworkError = false
                     )
                 }
-                return@launch
             }
-
-            // 3. Persist verified session
-            sessionRepository.saveSession(candidateSession)
-            authCoordinator.submitAuthResult(InteractiveAuthResult.Success(candidateSession))
-
-            _uiState.update {
-                it.copy(
-                    isValidating = false,
-                    isComplete = true,
-                    infoMessage = "Authentication verified successfully!"
-                )
+            is SessionValidationResult.NetworkError -> {
+                // Requirement 7 & 8: Temporary network failure must not clear valid session, provide Retry
+                _uiState.update {
+                    it.copy(
+                        isValidating = false,
+                        errorMessage = "Network error: ${validationVerdict.reason}. Your login session is preserved. Check your connection and tap Retry.",
+                        canRetry = true,
+                        isNetworkError = true
+                    )
+                }
+            }
+            is SessionValidationResult.ServerError -> {
+                _uiState.update {
+                    it.copy(
+                        isValidating = false,
+                        errorMessage = "Terabox server error (${validationVerdict.code}): ${validationVerdict.message}. Your login session is preserved. Please tap Retry.",
+                        canRetry = true,
+                        isNetworkError = true
+                    )
+                }
+            }
+            is SessionValidationResult.NotLoggedIn -> {
+                _uiState.update {
+                    it.copy(
+                        isValidating = false,
+                        errorMessage = "Session validation failed: ${validationVerdict.reason}. Please make sure you are logged in to your Terabox account.",
+                        canRetry = false,
+                        isNetworkError = false
+                    )
+                }
+            }
+            is SessionValidationResult.InvalidTokens -> {
+                _uiState.update {
+                    it.copy(
+                        isValidating = false,
+                        errorMessage = "Session tokens missing: ${validationVerdict.reason}. Please complete sign-in before continuing.",
+                        canRetry = false,
+                        isNetworkError = false
+                    )
+                }
+            }
+            is SessionValidationResult.UnexpectedResponse -> {
+                _uiState.update {
+                    it.copy(
+                        isValidating = false,
+                        errorMessage = "Unexpected response from server: ${validationVerdict.reason}. Tap Retry or complete verification in the browser.",
+                        canRetry = true,
+                        isNetworkError = false
+                    )
+                }
             }
         }
     }
@@ -180,4 +250,3 @@ class InteractiveAuthViewModel(
         }
     }
 }
-

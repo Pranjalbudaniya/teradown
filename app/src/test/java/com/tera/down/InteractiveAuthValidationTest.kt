@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.setMain
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -47,8 +48,8 @@ class InteractiveAuthValidationTest {
         mockWebServer.start()
 
         testHttpClient = OkHttpClient.Builder()
-            .connectTimeout(2, TimeUnit.SECONDS)
-            .readTimeout(2, TimeUnit.SECONDS)
+            .connectTimeout(500, TimeUnit.MILLISECONDS)
+            .readTimeout(500, TimeUnit.MILLISECONDS)
             .followRedirects(false)
             .build()
 
@@ -66,7 +67,7 @@ class InteractiveAuthValidationTest {
     fun onDone_missingCookies_rejectsAuthenticationWithActionableError() = runTest(testDispatcher) {
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid()
         }
 
         val viewModel = InteractiveAuthViewModel(
@@ -74,11 +75,11 @@ class InteractiveAuthValidationTest {
             sessionRepository = sessionRepository,
             sessionValidator = fakeValidator
         )
-        viewModel.initialize("https://www.terabox.com/main")
+        viewModel.initialize("https://www.terabox.app/main")
 
         // 1. Null cookies
         viewModel.onDone(
-            currentUrl = "https://www.terabox.com/main",
+            currentUrl = "https://www.terabox.app/main",
             cookieString = null,
             userAgent = "DesktopUA"
         )
@@ -92,7 +93,7 @@ class InteractiveAuthValidationTest {
 
         // 2. Blank cookies
         viewModel.onDone(
-            currentUrl = "https://www.terabox.com/main",
+            currentUrl = "https://www.terabox.app/main",
             cookieString = "   ",
             userAgent = "DesktopUA"
         )
@@ -115,8 +116,8 @@ class InteractiveAuthValidationTest {
         )
 
         val result = validator.validateSession(guestSession)
-        assertTrue(result is SessionValidationResult.Invalid)
-        val invalid = result as SessionValidationResult.Invalid
+        assertTrue(result is SessionValidationResult.InvalidTokens)
+        val invalid = result as SessionValidationResult.InvalidTokens
         assertTrue(invalid.reason.contains("ndus", ignoreCase = true))
     }
 
@@ -132,8 +133,8 @@ class InteractiveAuthValidationTest {
         )
 
         val result = validator.validateSession(expiredSession)
-        assertTrue(result is SessionValidationResult.Invalid)
-        val invalid = result as SessionValidationResult.Invalid
+        assertTrue(result is SessionValidationResult.InvalidTokens)
+        val invalid = result as SessionValidationResult.InvalidTokens
         assertTrue(invalid.reason.contains("expired", ignoreCase = true))
     }
 
@@ -142,7 +143,7 @@ class InteractiveAuthValidationTest {
         mockWebServer.enqueue(
             MockResponse()
                 .setResponseCode(302)
-                .setHeader("Location", "https://passport.terabox.com/v2/api/login")
+                .setHeader("Location", "https://passport.terabox.app/v2/api/login")
         )
 
         val validator = DefaultSessionValidator(
@@ -156,13 +157,13 @@ class InteractiveAuthValidationTest {
         )
 
         val result = validator.validateSession(session)
-        assertTrue(result is SessionValidationResult.Invalid)
-        val invalid = result as SessionValidationResult.Invalid
-        assertTrue(invalid.reason.contains("login endpoint", ignoreCase = true))
+        assertTrue(result is SessionValidationResult.NotLoggedIn)
+        val notLoggedIn = result as SessionValidationResult.NotLoggedIn
+        assertTrue(notLoggedIn.reason.contains("login endpoint", ignoreCase = true))
     }
 
     @Test
-    fun sessionValidator_serverReturnsHtmlInsteadOfJson_failsValidation() = runTest(testDispatcher) {
+    fun sessionValidator_serverReturnsHtmlInsteadOfJson_returnsUnexpectedResponse() = runTest(testDispatcher) {
         mockWebServer.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -181,13 +182,13 @@ class InteractiveAuthValidationTest {
         )
 
         val result = validator.validateSession(session)
-        assertTrue(result is SessionValidationResult.Invalid)
-        val invalid = result as SessionValidationResult.Invalid
-        assertTrue(invalid.reason.contains("web page", ignoreCase = true))
+        assertTrue(result is SessionValidationResult.UnexpectedResponse)
+        val unexpected = result as SessionValidationResult.UnexpectedResponse
+        assertTrue(unexpected.reason.contains("web page", ignoreCase = true))
     }
 
     @Test
-    fun sessionValidator_serverReturnsUnauthenticatedErrno_failsValidation() = runTest(testDispatcher) {
+    fun sessionValidator_serverReturnsUnauthenticatedErrno_returnsNotLoggedIn() = runTest(testDispatcher) {
         mockWebServer.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -206,16 +207,63 @@ class InteractiveAuthValidationTest {
         )
 
         val result = validator.validateSession(session)
-        assertTrue(result is SessionValidationResult.Invalid)
-        val invalid = result as SessionValidationResult.Invalid
-        assertTrue(invalid.reason.contains("unauthenticated", ignoreCase = true))
+        assertTrue(result is SessionValidationResult.NotLoggedIn)
+        val notLoggedIn = result as SessionValidationResult.NotLoggedIn
+        assertTrue(notLoggedIn.reason.contains("errno: -6", ignoreCase = true))
+    }
+
+    @Test
+    fun sessionValidator_timeout_returnsNetworkError() = runTest(testDispatcher) {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setSocketPolicy(SocketPolicy.NO_RESPONSE)
+        )
+
+        val validator = DefaultSessionValidator(
+            httpClient = testHttpClient,
+            baseUrlOverride = mockWebServer.url("/").toString()
+        )
+        val session = TeraboxSession(
+            domain = mockWebServer.hostName + ":" + mockWebServer.port,
+            cookieString = "ndus=COOKIE_FOR_TIMEOUT_TEST",
+            userAgent = "DesktopUA"
+        )
+
+        val result = validator.validateSession(session)
+        assertTrue(result is SessionValidationResult.NetworkError)
+        val netErr = result as SessionValidationResult.NetworkError
+        assertTrue(netErr.reason.contains("timed out", ignoreCase = true))
+    }
+
+    @Test
+    fun sessionValidator_server500_returnsServerError() = runTest(testDispatcher) {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setResponseCode(500)
+                .setBody("Internal Server Error")
+        )
+
+        val validator = DefaultSessionValidator(
+            httpClient = testHttpClient,
+            baseUrlOverride = mockWebServer.url("/").toString()
+        )
+        val session = TeraboxSession(
+            domain = mockWebServer.hostName + ":" + mockWebServer.port,
+            cookieString = "ndus=COOKIE_FOR_500_TEST",
+            userAgent = "DesktopUA"
+        )
+
+        val result = validator.validateSession(session)
+        assertTrue(result is SessionValidationResult.ServerError)
+        val serverErr = result as SessionValidationResult.ServerError
+        assertEquals(500, serverErr.code)
     }
 
     @Test
     fun onDone_failedSessionValidation_rejectsAuthAndDoesNotPersist() = runTest(testDispatcher) {
         val failingValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Invalid("Remote server rejected authentication token.")
+                SessionValidationResult.NotLoggedIn("Remote server rejected authentication token.")
         }
 
         val viewModel = InteractiveAuthViewModel(
@@ -223,10 +271,10 @@ class InteractiveAuthValidationTest {
             sessionRepository = sessionRepository,
             sessionValidator = failingValidator
         )
-        viewModel.initialize("https://www.terabox.com/main")
+        viewModel.initialize("https://www.terabox.app/main")
 
         viewModel.onDone(
-            currentUrl = "https://www.terabox.com/main",
+            currentUrl = "https://www.terabox.app/main",
             cookieString = "ndus=SOME_COOKIE",
             userAgent = "DesktopUA"
         )
@@ -237,6 +285,60 @@ class InteractiveAuthValidationTest {
         assertNotNull(state.errorMessage)
         assertTrue(state.errorMessage!!.contains("Remote server rejected authentication token"))
         assertNull(sessionRepository.getSession())
+    }
+
+    @Test
+    fun onDone_networkError_preservesCandidateSessionAndAllowsRetry() = runTest(testDispatcher) {
+        val networkFailingValidator = object : SessionValidator {
+            var calls = 0
+            override suspend fun validateSession(session: TeraboxSession): SessionValidationResult {
+                calls++
+                return if (calls == 1) {
+                    SessionValidationResult.NetworkError("Connection timed out reaching server")
+                } else {
+                    SessionValidationResult.Valid(uk = 99999L, uname = "recovered_user", verifiedDomain = "www.terabox.app")
+                }
+            }
+        }
+
+        val viewModel = InteractiveAuthViewModel(
+            authCoordinator = authCoordinator,
+            sessionRepository = sessionRepository,
+            sessionValidator = networkFailingValidator
+        )
+        viewModel.initialize("https://www.terabox.app/main")
+
+        // 1. Initial attempt fails with network error
+        viewModel.onDone(
+            currentUrl = "https://www.terabox.app/main",
+            cookieString = "ndus=VALID_RECOVERABLE_TOKEN",
+            userAgent = "DesktopUA"
+        )
+
+        var state = viewModel.uiState.value
+        assertFalse(state.isComplete)
+        assertTrue(state.canRetry)
+        assertTrue(state.isNetworkError)
+        assertNotNull(state.errorMessage)
+        assertTrue(state.errorMessage!!.contains("Network error", ignoreCase = true))
+        assertTrue(state.errorMessage!!.contains("preserved", ignoreCase = true))
+
+        // Session is NOT saved yet, but preserved for retry
+        assertNull(sessionRepository.getSession())
+
+        // 2. User taps Retry
+        viewModel.retryValidation()
+
+        state = viewModel.uiState.value
+        assertTrue(state.isComplete)
+        assertFalse(state.canRetry)
+        assertNull(state.errorMessage)
+
+        // Session was now persisted upon successful retry
+        val saved = sessionRepository.getSession()
+        assertNotNull(saved)
+        assertEquals("ndus=VALID_RECOVERABLE_TOKEN", saved?.cookieString)
+        assertEquals("www.terabox.app", saved?.domain)
     }
 
     @Test
@@ -274,6 +376,10 @@ class InteractiveAuthValidationTest {
         assertFalse(state.isValidating)
         assertNull(state.errorMessage)
 
+        // Verify request URL was lowercase /api/user/getinfo
+        val recordedReq = mockWebServer.takeRequest()
+        assertEquals("/api/user/getinfo", recordedReq.path)
+
         // Session was persisted in repository
         val savedSession = sessionRepository.getSession()
         assertNotNull(savedSession)
@@ -291,7 +397,7 @@ class InteractiveAuthValidationTest {
     fun googleSignIn_detected_triggersBlockedNoticeWithoutSpoofing() = runTest(testDispatcher) {
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid()
         }
 
         val viewModel = InteractiveAuthViewModel(
@@ -299,7 +405,7 @@ class InteractiveAuthValidationTest {
             sessionRepository = sessionRepository,
             sessionValidator = fakeValidator
         )
-        viewModel.initialize("https://www.terabox.com/main")
+        viewModel.initialize("https://www.terabox.app/main")
 
         assertFalse(viewModel.uiState.value.isGoogleSignInBlocked)
 
@@ -322,7 +428,7 @@ class InteractiveAuthValidationTest {
     fun onCancel_cancelsAuthCoordinatorAndCompletes() = runTest(testDispatcher) {
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid()
         }
 
         val viewModel = InteractiveAuthViewModel(
@@ -330,10 +436,10 @@ class InteractiveAuthValidationTest {
             sessionRepository = sessionRepository,
             sessionValidator = fakeValidator
         )
-        viewModel.initialize("https://www.terabox.com/main")
+        viewModel.initialize("https://www.terabox.app/main")
 
         val deferredAuth = async {
-            authCoordinator.requestInteractiveAuth("https://www.terabox.com/s/123", "Login required")
+            authCoordinator.requestInteractiveAuth("https://www.terabox.app/s/123", "Login required")
         }
 
         viewModel.onCancel()
@@ -346,7 +452,7 @@ class InteractiveAuthValidationTest {
     @Test
     fun settings_logout_clearsPersistedSession() = runTest(testDispatcher) {
         val savedSession = TeraboxSession(
-            domain = "terabox.com",
+            domain = "www.terabox.app",
             cookieString = "ndus=SAVED_LOGIN_TOKEN",
             userAgent = "DesktopUA"
         )
@@ -368,7 +474,7 @@ class InteractiveAuthValidationTest {
 
         // Verify session status initially reflects logged in state
         assertTrue(settingsViewModel.uiState.value.isSessionActive)
-        assertEquals("terabox.com", settingsViewModel.uiState.value.activeSessionDomain)
+        assertEquals("www.terabox.app", settingsViewModel.uiState.value.activeSessionDomain)
 
         // Perform explicit logout
         settingsViewModel.logout()

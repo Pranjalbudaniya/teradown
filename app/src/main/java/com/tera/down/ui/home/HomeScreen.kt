@@ -83,7 +83,7 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TeledownTopBar(
-                title = "Teledown",
+                title = "TeraDown",
                 subtitle = "Personal Media Downloader & Streamer"
             )
         },
@@ -114,7 +114,7 @@ fun HomeScreen(
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.ic_app_logo),
-                        contentDescription = "Teledown Logo",
+                        contentDescription = "TeraDown Logo",
                         modifier = Modifier
                             .size(48.dp)
                             .clip(RoundedCornerShape(12.dp))

@@ -146,7 +146,9 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
                 val existing = repo.getSession()
                 if (existing != null) {
                     val verdict = sessionValidator.validateSession(existing)
-                    if (verdict is com.tera.down.feature.auth.SessionValidationResult.Invalid) {
+                    if (verdict is com.tera.down.feature.auth.SessionValidationResult.NotLoggedIn ||
+                        verdict is com.tera.down.feature.auth.SessionValidationResult.InvalidTokens
+                    ) {
                         repo.clearSession()
                     }
                 }

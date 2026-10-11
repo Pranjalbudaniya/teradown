@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Teradown"
+rootProject.name = "TeraDown"
 
 include(":app")

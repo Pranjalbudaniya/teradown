@@ -1,4 +1,4 @@
-# Teledown Architecture Specification
+# TeraDown Architecture Specification
 
 **Package Root:** `com.tera.down`  
 **Application ID:** `com.tera.down`  
@@ -8,7 +8,7 @@
 
 ## 1. High-Level Architecture
 
-Teledown is architected using **Clean Architecture** principles and **Unidirectional Data Flow (UDF)**. Business logic, storage, networking, and UI layers are strictly decoupled through interfaces and dependency injection.
+TeraDown is architected using **Clean Architecture** principles and **Unidirectional Data Flow (UDF)**. Business logic, storage, networking, and UI layers are strictly decoupled through interfaces and dependency injection.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

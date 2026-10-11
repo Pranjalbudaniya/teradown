@@ -266,15 +266,47 @@ class SettingsViewModel(
                     _uiState.update {
                         it.copy(
                             isValidatingSession = false,
-                            sessionValidationStatus = "Session verified & active!"
+                            sessionValidationStatus = "Session verified & active on ${result.verifiedDomain ?: session.domain}!"
                         )
                     }
                 }
-                is SessionValidationResult.Invalid -> {
+                is SessionValidationResult.NetworkError -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Network error: ${result.reason}. Current session preserved. Tap Validate Session to retry."
+                        )
+                    }
+                }
+                is SessionValidationResult.ServerError -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Server error (${result.code}): ${result.message}. Session preserved."
+                        )
+                    }
+                }
+                is SessionValidationResult.NotLoggedIn -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Session rejected: ${result.reason}"
+                        )
+                    }
+                }
+                is SessionValidationResult.InvalidTokens -> {
                     _uiState.update {
                         it.copy(
                             isValidatingSession = false,
                             sessionValidationStatus = "Session invalid: ${result.reason}"
+                        )
+                    }
+                }
+                is SessionValidationResult.UnexpectedResponse -> {
+                    _uiState.update {
+                        it.copy(
+                            isValidatingSession = false,
+                            sessionValidationStatus = "Unexpected response: ${result.reason}"
                         )
                     }
                 }

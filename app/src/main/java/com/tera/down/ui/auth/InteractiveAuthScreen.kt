@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -33,13 +34,16 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -174,18 +178,34 @@ fun InteractiveAuthScreen(
                             val wv = webViewInstance
                             val current = wv?.url ?: uiState.currentUrl
 
-                            // Requirement 2: Inspect cookies for the validated Terabox URL
+                            // Requirement 2 & 4: Inspect cookies for the validated Terabox URL and active mirrors
                             val targetUri = try { Uri.parse(current) } catch (_: Exception) { null }
-                            val targetHost = targetUri?.host?.lowercase() ?: "www.terabox.com"
+                            val targetHost = targetUri?.host?.lowercase() ?: "www.terabox.app"
                             val teraboxDomainUrl = if (targetHost.contains("terabox") || targetHost.contains("1024tera") || targetHost.contains("dubox")) {
                                 "https://$targetHost"
                             } else {
-                                "https://www.terabox.com"
+                                "https://www.terabox.app"
                             }
 
                             val cookieManager = CookieManager.getInstance()
                             cookieManager.flush()
-                            val cookies = cookieManager.getCookie(teraboxDomainUrl) ?: cookieManager.getCookie(current)
+
+                            val candidateUrls = listOfNotNull(
+                                teraboxDomainUrl,
+                                current.takeIf { it.isNotBlank() },
+                                "https://www.terabox.app",
+                                "https://1024tera.com",
+                                "https://www.terabox.com",
+                                "https://terabox.com"
+                            ).distinct()
+
+                            val foundCookies = candidateUrls.mapNotNull { url ->
+                                cookieManager.getCookie(url)?.takeIf { it.isNotBlank() }
+                            }
+                            val cookies = foundCookies.firstOrNull { c ->
+                                com.tera.down.feature.auth.DefaultSessionValidator.AUTH_COOKIE_MARKERS.any { c.lowercase().contains(it) }
+                            } ?: cookieManager.getCookie(teraboxDomainUrl) ?: cookieManager.getCookie(current)
+
                             val ua = wv?.settings?.userAgentString ?: ""
                             viewModel.onDone(teraboxDomainUrl, cookies, ua)
                         },
@@ -321,19 +341,44 @@ fun InteractiveAuthScreen(
                 }
             }
 
-            // Error or Max Promo Hits notice
+            // Error banner with Retry action (Requirement 7 & 8)
             if (uiState.errorMessage != null && !uiState.isGoogleSignInBlocked) {
-                Box(
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(StatusError.copy(alpha = 0.12f))
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Icon(
+                        imageVector = if (uiState.isNetworkError) Icons.Default.Warning else Icons.Default.Info,
+                        contentDescription = null,
+                        tint = StatusError,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = uiState.errorMessage ?: "",
                         style = MaterialTheme.typography.bodySmall,
-                        color = StatusError
+                        color = StatusError,
+                        modifier = Modifier.weight(1f)
                     )
+                    if (uiState.canRetry) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        FilledTonalButton(
+                            onClick = { viewModel.retryValidation() },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Retry", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
             }
 

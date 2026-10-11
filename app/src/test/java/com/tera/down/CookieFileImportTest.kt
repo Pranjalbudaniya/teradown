@@ -206,7 +206,7 @@ class CookieFileImportTest {
 
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid(verifiedDomain = "www.terabox.app")
         }
         val importer = CookieFileImporter(sessionRepository, fakeValidator)
 
@@ -224,7 +224,7 @@ class CookieFileImportTest {
 
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid(verifiedDomain = "www.terabox.app")
         }
         val importer = CookieFileImporter(sessionRepository, fakeValidator)
 
@@ -243,7 +243,7 @@ class CookieFileImportTest {
 
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid(verifiedDomain = "www.terabox.app")
         }
         val importer = CookieFileImporter(sessionRepository, fakeValidator)
 
@@ -260,7 +260,7 @@ class CookieFileImportTest {
 
         val failingValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Invalid("Session token was revoked by user or expired.")
+                SessionValidationResult.NotLoggedIn("Session token was revoked by user or expired.")
         }
         val importer = CookieFileImporter(sessionRepository, failingValidator)
 
@@ -279,7 +279,7 @@ class CookieFileImportTest {
 
         val networkFailingValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Invalid("Unable to verify session with server: ConnectException connection refused")
+                SessionValidationResult.NetworkError("ConnectException connection refused")
         }
         val importer = CookieFileImporter(sessionRepository, networkFailingValidator)
 
@@ -429,7 +429,7 @@ class CookieFileImportTest {
         // 2. Perform cookie import via SettingsViewModel
         val fakeValidator = object : SessionValidator {
             override suspend fun validateSession(session: TeraboxSession): SessionValidationResult =
-                SessionValidationResult.Valid
+                SessionValidationResult.Valid(verifiedDomain = "www.terabox.app")
         }
         val importer = CookieFileImporter(sessionRepository, fakeValidator)
         val storageManager = StorageManager(baseDir = tempRoot)

@@ -127,30 +127,45 @@ class CookieFileImporter(
 
         // 6. Online Server Validation (Requirement 6: Never assume validity without verification)
         val validationResult = sessionValidator.validateSession(candidateSession)
-        if (validationResult is SessionValidationResult.Invalid) {
-            val reason = validationResult.reason
-            return if (reason.contains("network", ignoreCase = true) ||
-                reason.contains("Unable to verify", ignoreCase = true) ||
-                reason.contains("connect", ignoreCase = true)
-            ) {
-                CookieImportResult.NetworkFailure(
-                    "Network error verifying session with Terabox servers: $reason"
+        val verifiedDomain = when (validationResult) {
+            is SessionValidationResult.Valid -> validationResult.verifiedDomain ?: candidateSession.domain
+            is SessionValidationResult.NetworkError -> {
+                return CookieImportResult.NetworkFailure(
+                    "Network error verifying session with Terabox servers: ${validationResult.reason}"
                 )
-            } else {
-                CookieImportResult.RejectedSession(
-                    "Terabox server rejected the imported session: $reason"
+            }
+            is SessionValidationResult.ServerError -> {
+                return CookieImportResult.NetworkFailure(
+                    "Server error (${validationResult.code}) verifying session: ${validationResult.message}"
+                )
+            }
+            is SessionValidationResult.NotLoggedIn -> {
+                return CookieImportResult.RejectedSession(
+                    "Terabox server rejected the imported session: ${validationResult.reason}"
+                )
+            }
+            is SessionValidationResult.InvalidTokens -> {
+                return CookieImportResult.MissingAuthTokens(
+                    validationResult.reason
+                )
+            }
+            is SessionValidationResult.UnexpectedResponse -> {
+                return CookieImportResult.RejectedSession(
+                    "Unexpected response from server: ${validationResult.reason}"
                 )
             }
         }
 
+        val verifiedSession = candidateSession.copy(domain = verifiedDomain)
+
         // 7. Synchronize with Android WebView CookieManager (Requirement 5)
-        synchronizeCookieManager(activeCookies, candidateSession.domain)
+        synchronizeCookieManager(activeCookies, verifiedSession.domain)
 
         // 8. Persist authenticated session securely (Requirement 7)
-        sessionRepository.saveSession(candidateSession)
+        sessionRepository.saveSession(verifiedSession)
 
         return CookieImportResult.Success(
-            domain = candidateSession.domain,
+            domain = verifiedSession.domain,
             cookieCount = activeCookies.size,
             expiryEstimate = expiryEstimate
         )
